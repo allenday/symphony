@@ -1,0 +1,17 @@
+services:
+  symphony:
+    build:
+      context: .
+      dockerfile: elixir/docker/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "4000:4000"
+    volumes:
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+      - symphony-workspaces:/workspaces
+      - symphony-logs:/var/log/symphony
+
+volumes:
+  symphony-workspaces:
+  symphony-logs:

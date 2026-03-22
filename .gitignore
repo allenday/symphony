@@ -1,0 +1,4 @@
+.worktrees/
+.env
+.env.builder
+.env.reviewer

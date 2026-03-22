@@ -215,9 +215,7 @@ defmodule SymphonyElixir.Gitea.Client do
         comments
 
       {:error, reason} ->
-        Logger.warning(
-          "Failed to fetch Gitea issue comments for issue_id=#{issue_id}: #{inspect(reason)}"
-        )
+        Logger.warning("Failed to fetch Gitea issue comments for issue_id=#{issue_id}: #{inspect(reason)}")
 
         []
     end
@@ -403,7 +401,8 @@ defmodule SymphonyElixir.Gitea.Client do
     |> Enum.filter(&(state_match_key(&1.state) in active))
     |> Enum.filter(fn issue ->
       case normalized_assignee do
-        nil -> true
+        nil ->
+          true
 
         expected ->
           issue_assignee = normalize_assignee(issue.assignee_id)
@@ -468,8 +467,7 @@ defmodule SymphonyElixir.Gitea.Client do
 
       {:error, reason} ->
         warn_once(
-          {:board_fetch_failed, tracker.endpoint, tracker.owner, tracker.repo,
-           tracker.project_id},
+          {:board_fetch_failed, tracker.endpoint, tracker.owner, tracker.repo, tracker.project_id},
           fn ->
             "Failed to fetch Gitea board snapshot for project_id=#{tracker.project_id}: #{inspect(reason)}"
           end

@@ -1,0 +1,34 @@
+services:
+  symphony-builder:
+    build:
+      context: .
+      dockerfile: elixir/docker/Dockerfile
+    env_file:
+      - .env.builder
+    environment:
+      SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.builder.md
+    ports:
+      - "4000:4000"
+    volumes:
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+      - symphony-builder-workspaces:/workspaces
+      - symphony-builder-logs:/var/log/symphony
+
+  symphony-reviewer:
+    build:
+      context: .
+      dockerfile: elixir/docker/Dockerfile
+    env_file:
+      - .env.reviewer
+    environment:
+      SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.reviewer.md
+    volumes:
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+      - symphony-reviewer-workspaces:/workspaces
+      - symphony-reviewer-logs:/var/log/symphony
+
+volumes:
+  symphony-builder-workspaces:
+  symphony-builder-logs:
+  symphony-reviewer-workspaces:
+  symphony-reviewer-logs:

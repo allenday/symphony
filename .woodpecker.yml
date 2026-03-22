@@ -1,0 +1,15 @@
+when:
+  - event: [push, pull_request, manual]
+
+steps:
+  elixir-ci:
+    image: elixir:1.19.5-otp-28
+    commands:
+      - cd elixir
+      - mix local.hex --force
+      - mix local.rebar --force
+      - mix setup
+      - mix build
+      - mix format --check-formatted
+      - mix lint
+      - mix test

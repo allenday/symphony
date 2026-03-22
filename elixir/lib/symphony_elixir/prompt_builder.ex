@@ -39,8 +39,7 @@ defmodule SymphonyElixir.PromptBuilder do
   rescue
     error ->
       reraise %RuntimeError{
-                message:
-                  "template_parse_error: #{Exception.message(error)} template=#{inspect(prompt)}"
+                message: "template_parse_error: #{Exception.message(error)} template=#{inspect(prompt)}"
               },
               __STACKTRACE__
   end

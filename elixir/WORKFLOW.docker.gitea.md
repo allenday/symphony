@@ -28,6 +28,7 @@ hooks:
 agent:
   max_concurrent_agents: 2
   max_turns: 10
+  max_tokens_per_attempt: 400000
 codex:
   command: "$SYMPHONY_CODEX_COMMAND"
   approval_policy: never

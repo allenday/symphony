@@ -326,8 +326,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, state_lookup_query, %{issueId: "issue-1", stateName: "Done"}}
     assert state_lookup_query =~ "states"
 
-    assert_receive {:graphql_called, update_issue_query,
-                    %{issueId: "issue-1", stateId: "state-1"}}
+    assert_receive {:graphql_called, update_issue_query, %{issueId: "issue-1", stateId: "state-1"}}
 
     assert update_issue_query =~ "issueUpdate"
 
@@ -423,8 +422,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil,
                  "turn_count" => 7,
                  "last_message" => "rendered",
-                 "started_at" =>
-                   state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
+                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -705,9 +703,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 50
     ]
 
-    start_supervised!(
-      {StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh}
-    )
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
 
     start_supervised!({HttpServer, server_opts})
 

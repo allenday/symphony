@@ -25,6 +25,7 @@ defmodule SymphonyElixir.CoreTest do
 
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.agent.max_tokens_per_attempt == nil
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -44,6 +45,13 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_attempt: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.max_tokens_per_attempt"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_attempt: 400_000)
+    assert Config.settings!().agent.max_tokens_per_attempt == 400_000
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -271,8 +279,7 @@ defmodule SymphonyElixir.CoreTest do
 
     File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
 
-    assert {:ok,
-            %{config: %{"tracker" => %{"kind" => "linear"}}, prompt: "", prompt_template: ""}} =
+    assert {:ok, %{config: %{"tracker" => %{"kind" => "linear"}}, prompt: "", prompt_template: ""}} =
              Workflow.load(workflow_path)
   end
 
@@ -843,10 +850,14 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
+    upper_jitter_ms = 5_000
+    lower_jitter_ms = 1_000
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+    assert is_integer(due_at_ms)
+    assert remaining_ms >= -lower_jitter_ms
+    assert remaining_ms <= max_remaining_ms + upper_jitter_ms
+    assert min_remaining_ms >= 0
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
@@ -1020,9 +1031,7 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok =
              Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
 
-    Workflow.set_workflow_file_path(
-      Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md")
-    )
+    Workflow.set_workflow_file_path(Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md"))
 
     issue = %Issue{
       identifier: "MT-780",

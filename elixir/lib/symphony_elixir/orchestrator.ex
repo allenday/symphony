@@ -132,9 +132,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           case reason do
             :normal ->
-              Logger.info(
-                "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check"
-              )
+              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
               state
               |> complete_issue(issue_id)
@@ -146,9 +144,7 @@ defmodule SymphonyElixir.Orchestrator do
               })
 
             _ ->
-              Logger.warning(
-                "Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry"
-              )
+              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -160,9 +156,7 @@ defmodule SymphonyElixir.Orchestrator do
               })
           end
 
-        Logger.info(
-          "Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}"
-        )
+        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
         notify_dashboard()
         {:noreply, state}
@@ -202,8 +196,20 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
 
-        notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        case token_cap_exceeded?(updated_running_entry) do
+          true ->
+            state =
+              state
+              |> maybe_park_issue_after_token_cap(updated_running_entry)
+              |> terminate_running_issue(issue_id, false)
+
+            notify_dashboard()
+            {:noreply, state}
+
+          false ->
+            notify_dashboard()
+            {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        end
     end
   end
 
@@ -296,9 +302,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> reconcile_missing_running_issue_ids(running_ids, issues)
 
         {:error, reason} ->
-          Logger.debug(
-            "Failed to refresh running issue states: #{inspect(reason)}; keeping active workers"
-          )
+          Logger.debug("Failed to refresh running issue states: #{inspect(reason)}; keeping active workers")
 
           state
       end
@@ -356,16 +360,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp reconcile_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
-        Logger.info(
-          "Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent"
-        )
+        Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable_to_worker?(issue) ->
-        Logger.info(
-          "Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent"
-        )
+        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
 
@@ -373,9 +373,7 @@ defmodule SymphonyElixir.Orchestrator do
         refresh_running_issue_state(state, issue)
 
       true ->
-        Logger.info(
-          "Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent"
-        )
+        Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
     end
@@ -408,14 +406,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp log_missing_running_issue(%State{} = state, issue_id) when is_binary(issue_id) do
     case Map.get(state.running, issue_id) do
       %{identifier: identifier} ->
-        Logger.info(
-          "Issue no longer visible during running-state refresh: issue_id=#{issue_id} issue_identifier=#{identifier}; stopping active agent"
-        )
+        Logger.info("Issue no longer visible during running-state refresh: issue_id=#{issue_id} issue_identifier=#{identifier}; stopping active agent")
 
       _ ->
-        Logger.info(
-          "Issue no longer visible during running-state refresh: issue_id=#{issue_id}; stopping active agent"
-        )
+        Logger.info("Issue no longer visible during running-state refresh: issue_id=#{issue_id}; stopping active agent")
     end
   end
 
@@ -490,9 +484,7 @@ defmodule SymphonyElixir.Orchestrator do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
 
-      Logger.warning(
-        "Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff"
-      )
+      Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
 
       next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -555,8 +547,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
     Enum.sort_by(issues, fn
       %Issue{} = issue ->
-        {priority_rank(issue.priority), issue_created_at_sort_key(issue),
-         issue.identifier || issue.id || ""}
+        {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
 
       _ ->
         {priority_rank(nil), issue_created_at_sort_key(nil), ""}
@@ -692,23 +683,17 @@ defmodule SymphonyElixir.Orchestrator do
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
       {:skip, :missing} ->
-        Logger.info(
-          "Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}"
-        )
+        Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
 
         state
 
       {:skip, %Issue{} = refreshed_issue} ->
-        Logger.info(
-          "Skipping stale dispatch after issue refresh: #{issue_context(refreshed_issue)} state=#{inspect(refreshed_issue.state)} blocked_by=#{length(refreshed_issue.blocked_by)}"
-        )
+        Logger.info("Skipping stale dispatch after issue refresh: #{issue_context(refreshed_issue)} state=#{inspect(refreshed_issue.state)} blocked_by=#{length(refreshed_issue.blocked_by)}")
 
         state
 
       {:error, reason} ->
-        Logger.warning(
-          "Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}"
-        )
+        Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
 
         state
     end
@@ -719,9 +704,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
-        Logger.debug(
-          "No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}"
-        )
+        Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
 
         state
 
@@ -737,9 +720,7 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
-        Logger.info(
-          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}"
-        )
+        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
         maybe_move_to_in_progress(issue)
 
@@ -795,9 +776,7 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.info("Moved issue to In Progress: #{issue_context(issue)}")
 
         {:error, reason} ->
-          Logger.warning(
-            "Failed to move issue to In Progress: #{issue_context(issue)} reason=#{inspect(reason)}"
-          )
+          Logger.warning("Failed to move issue to In Progress: #{issue_context(issue)} reason=#{inspect(reason)}")
       end
     end
   end
@@ -851,9 +830,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
-    Logger.warning(
-      "Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}"
-    )
+    Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
 
     %{
       state
@@ -882,8 +859,7 @@ defmodule SymphonyElixir.Orchestrator do
           workspace_path: Map.get(retry_entry, :workspace_path)
         }
 
-        {:ok, attempt, metadata,
-         %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
+        {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
 
       _ ->
         :missing
@@ -898,9 +874,7 @@ defmodule SymphonyElixir.Orchestrator do
         |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
 
       {:error, reason} ->
-        Logger.warning(
-          "Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}"
-        )
+        Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
         {:noreply,
          schedule_issue_retry(
@@ -917,9 +891,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
-        Logger.info(
-          "Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace"
-        )
+        Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
         {:noreply, release_issue_claim(state, issue_id)}
@@ -928,9 +900,7 @@ defmodule SymphonyElixir.Orchestrator do
         handle_active_retry(state, issue, attempt, metadata)
 
       true ->
-        Logger.debug(
-          "Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}"
-        )
+        Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
         {:noreply, release_issue_claim(state, issue_id)}
     end
@@ -962,9 +932,7 @@ defmodule SymphonyElixir.Orchestrator do
         end)
 
       {:error, reason} ->
-        Logger.warning(
-          "Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}"
-        )
+        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
     end
   end
 
@@ -1725,6 +1693,46 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp running_seconds(_started_at, _now), do: 0
+
+  defp token_cap_exceeded?(running_entry) when is_map(running_entry) do
+    case Config.max_tokens_per_attempt() do
+      cap when is_integer(cap) and cap > 0 ->
+        Map.get(running_entry, :codex_total_tokens, 0) > cap
+
+      _ ->
+        false
+    end
+  end
+
+  defp token_cap_exceeded?(_running_entry), do: false
+
+  defp maybe_park_issue_after_token_cap(%State{} = state, running_entry) when is_map(running_entry) do
+    issue = Map.get(running_entry, :issue)
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    cap = Config.max_tokens_per_attempt()
+    identifier = Map.get(running_entry, :identifier, "unknown")
+
+    Logger.warning("Token cap exceeded for issue_id=#{Map.get(issue, :id)} issue_identifier=#{identifier}: total_tokens=#{total_tokens} cap=#{inspect(cap)}; stopping active run")
+
+    maybe_transition_to_backlog(issue, identifier)
+    state
+  end
+
+  defp maybe_park_issue_after_token_cap(%State{} = state, _running_entry), do: state
+
+  defp maybe_transition_to_backlog(%Issue{} = issue, identifier) do
+    if Config.settings!().tracker.kind == "gitea" do
+      case Tracker.update_issue_state(issue.id, "Backlog") do
+        :ok ->
+          Logger.info("Moved issue to Backlog after token cap stop: issue_identifier=#{identifier}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to move issue to Backlog after token cap stop: issue_identifier=#{identifier} reason=#{inspect(reason)}")
+      end
+    end
+  end
+
+  defp maybe_transition_to_backlog(_issue, _identifier), do: :ok
 
   defp integer_like(value) when is_integer(value) and value >= 0, do: value
 

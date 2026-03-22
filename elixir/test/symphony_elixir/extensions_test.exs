@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias SymphonyElixir.Gitea.Adapter, as: GiteaAdapter
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -36,6 +37,33 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeGiteaClient do
+    def fetch_candidate_issues do
+      send(self(), :gitea_fetch_candidate_issues_called)
+      {:ok, [:candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:gitea_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:gitea_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:gitea_create_comment_called, issue_id, body})
+      :ok
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:gitea_update_issue_state_called, issue_id, state_name})
+      :ok
     end
   end
 
@@ -79,12 +107,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    gitea_client_module = Application.get_env(:symphony_elixir, :gitea_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(gitea_client_module) do
+        Application.delete_env(:symphony_elixir, :gitea_client_module)
+      else
+        Application.put_env(:symphony_elixir, :gitea_client_module, gitea_client_module)
       end
     end)
 
@@ -203,6 +238,36 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitea",
+      tracker_api_token: "token",
+      tracker_endpoint: "https://gitea.example.test",
+      tracker_owner: "org",
+      tracker_repo: "repo",
+      tracker_project_id: 1
+    )
+
+    assert SymphonyElixir.Tracker.adapter() == GiteaAdapter
+  end
+
+  test "gitea adapter delegates through configured client module" do
+    Application.put_env(:symphony_elixir, :gitea_client_module, FakeGiteaClient)
+
+    assert {:ok, [:candidate]} = GiteaAdapter.fetch_candidate_issues()
+    assert_receive :gitea_fetch_candidate_issues_called
+
+    assert {:ok, ["Todo"]} = GiteaAdapter.fetch_issues_by_states(["Todo"])
+    assert_receive {:gitea_fetch_issues_by_states_called, ["Todo"]}
+
+    assert {:ok, ["1"]} = GiteaAdapter.fetch_issue_states_by_ids(["1"])
+    assert_receive {:gitea_fetch_issue_states_by_ids_called, ["1"]}
+
+    assert :ok = GiteaAdapter.create_comment("1", "hello")
+    assert_receive {:gitea_create_comment_called, "1", "hello"}
+
+    assert :ok = GiteaAdapter.update_issue_state("1", "Done")
+    assert_receive {:gitea_update_issue_state_called, "1", "Done"}
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -261,7 +326,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, state_lookup_query, %{issueId: "issue-1", stateName: "Done"}}
     assert state_lookup_query =~ "states"
 
-    assert_receive {:graphql_called, update_issue_query, %{issueId: "issue-1", stateId: "state-1"}}
+    assert_receive {:graphql_called, update_issue_query,
+                    %{issueId: "issue-1", stateId: "state-1"}}
 
     assert update_issue_query =~ "issueUpdate"
 
@@ -347,15 +413,18 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
+                 "attempt" => 3,
+                 "last_error" => nil,
+                 "session_id" => "thread-http",
+                 "last_event" => "notification",
+                 "last_event_at" => nil,
                  "state" => "In Progress",
                  "worker_host" => nil,
                  "workspace_path" => nil,
-                 "session_id" => "thread-http",
                  "turn_count" => 7,
-                 "last_event" => "notification",
                  "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                 "last_event_at" => nil,
+                 "started_at" =>
+                   state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -364,6 +433,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
+                 "last_error" => "boom",
+                 "session_id" => nil,
+                 "last_event" => nil,
+                 "last_event_at" => nil,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
@@ -632,7 +705,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 50
     ]
 
-    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
+    start_supervised!(
+      {StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh}
+    )
 
     start_supervised!({HttpServer, server_opts})
 
@@ -689,6 +764,8 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          attempt: 3,
+          last_error: nil,
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 7,
@@ -707,6 +784,10 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_id: "issue-retry",
           identifier: "MT-RETRY",
           attempt: 2,
+          last_error: "boom",
+          session_id: nil,
+          last_codex_event: nil,
+          last_codex_timestamp: nil,
           due_in_ms: 2_000,
           error: "boom"
         }

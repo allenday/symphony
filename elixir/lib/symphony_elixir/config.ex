@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in ["linear", "memory", "gitea"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
@@ -127,6 +127,21 @@ defmodule SymphonyElixir.Config do
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
+
+      settings.tracker.kind == "gitea" and not is_binary(settings.tracker.api_key) ->
+        {:error, :missing_gitea_api_token}
+
+      settings.tracker.kind == "gitea" and not is_binary(settings.tracker.endpoint) ->
+        {:error, :missing_gitea_endpoint}
+
+      settings.tracker.kind == "gitea" and not is_binary(settings.tracker.owner) ->
+        {:error, :missing_gitea_owner}
+
+      settings.tracker.kind == "gitea" and not is_binary(settings.tracker.repo) ->
+        {:error, :missing_gitea_repo}
+
+      settings.tracker.kind == "gitea" and not is_integer(settings.tracker.project_id) ->
+        {:error, :missing_gitea_project_id}
 
       true ->
         :ok

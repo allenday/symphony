@@ -37,6 +37,33 @@ defmodule SymphonyElixir.Config.Schema do
     def dump(_value), do: :error
   end
 
+  defmodule IntegerOrString do
+    @moduledoc false
+    @behaviour Ecto.Type
+
+    @spec type() :: :string
+    def type, do: :string
+
+    @spec embed_as(term()) :: :self
+    def embed_as(_format), do: :self
+
+    @spec equal?(term(), term()) :: boolean()
+    def equal?(left, right), do: left == right
+
+    @spec cast(term()) :: {:ok, integer() | String.t()} | :error
+    def cast(value) when is_integer(value) or is_binary(value), do: {:ok, value}
+    def cast(_value), do: :error
+
+    @spec load(term()) :: {:ok, integer() | String.t()} | :error
+    def load(value) when is_integer(value) or is_binary(value), do: {:ok, value}
+    def load(_value), do: :error
+
+    @spec dump(term()) :: {:ok, String.t()} | :error
+    def dump(value) when is_integer(value), do: {:ok, Integer.to_string(value)}
+    def dump(value) when is_binary(value), do: {:ok, value}
+    def dump(_value), do: :error
+  end
+
   defmodule Tracker do
     @moduledoc false
     use Ecto.Schema
@@ -46,9 +73,14 @@ defmodule SymphonyElixir.Config.Schema do
 
     embedded_schema do
       field(:kind, :string)
-      field(:endpoint, :string, default: "https://api.linear.app/graphql")
+      field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:owner, :string)
+      field(:repo, :string)
+      field(:project_id, IntegerOrString)
+      field(:web_cookie, :string)
+      field(:web_csrf_token, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -59,7 +91,20 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :owner,
+          :repo,
+          :project_id,
+          :web_cookie,
+          :web_csrf_token,
+          :assignee,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
@@ -366,10 +411,29 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    tracker_api_fallback =
+      case settings.tracker.kind do
+        "gitea" -> System.get_env("GITEA_API_KEY")
+        _ -> System.get_env("LINEAR_API_KEY")
+      end
+
+    tracker_assignee_fallback =
+      case settings.tracker.kind do
+        "gitea" -> System.get_env("GITEA_ASSIGNEE")
+        _ -> System.get_env("LINEAR_ASSIGNEE")
+      end
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_fallback),
+        assignee: resolve_secret_setting(settings.tracker.assignee, tracker_assignee_fallback),
+        endpoint: resolve_endpoint(settings.tracker.kind, settings.tracker.endpoint),
+        project_slug: resolve_secret_setting(settings.tracker.project_slug, nil),
+        owner: resolve_secret_setting(settings.tracker.owner, nil),
+        repo: resolve_secret_setting(settings.tracker.repo, nil),
+        project_id: resolve_integer_setting(settings.tracker.project_id, System.get_env("GITEA_PROJECT_ID")),
+        web_cookie: resolve_secret_setting(settings.tracker.web_cookie, System.get_env("GITEA_WEB_COOKIE")),
+        web_csrf_token: resolve_secret_setting(settings.tracker.web_csrf_token, System.get_env("GITEA_WEB_CSRF_TOKEN"))
     }
 
     workspace = %{
@@ -385,6 +449,16 @@ defmodule SymphonyElixir.Config.Schema do
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
+
+  defp resolve_endpoint("gitea", endpoint) do
+    resolve_secret_setting(endpoint, System.get_env("GITEA_ENDPOINT"))
+  end
+
+  defp resolve_endpoint("linear", endpoint) do
+    resolve_secret_setting(endpoint, "https://api.linear.app/graphql")
+  end
+
+  defp resolve_endpoint(_kind, endpoint), do: resolve_secret_setting(endpoint, nil)
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -478,6 +552,27 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp resolve_integer_setting(nil, fallback), do: parse_integer_setting(fallback)
+
+  defp resolve_integer_setting(value, fallback) when is_binary(value) do
+    value
+    |> resolve_env_value(fallback)
+    |> parse_integer_setting()
+  end
+
+  defp resolve_integer_setting(value, _fallback), do: parse_integer_setting(value)
+
+  defp parse_integer_setting(value) when is_integer(value), do: value
+
+  defp parse_integer_setting(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} -> parsed
+      _ -> nil
+    end
+  end
+
+  defp parse_integer_setting(_value), do: nil
 
   defp default_turn_sandbox_policy(workspace) do
     %{

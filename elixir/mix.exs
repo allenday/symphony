@@ -64,7 +64,7 @@ defmodule SymphonyElixir.MixProject do
   defp deps do
     [
       {:bandit, "~> 1.8"},
-      {:floki, ">= 0.30.0", only: :test},
+      {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:phoenix, "~> 1.8.0"},
       {:phoenix_html, "~> 4.2"},

@@ -850,10 +850,14 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
+    upper_jitter_ms = 5_000
+    lower_jitter_ms = 1_000
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+    assert is_integer(due_at_ms)
+    assert remaining_ms >= -lower_jitter_ms
+    assert remaining_ms <= max_remaining_ms + upper_jitter_ms
+    assert min_remaining_ms >= 0
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

@@ -202,8 +202,20 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
 
-        notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        case token_cap_exceeded?(updated_running_entry) do
+          true ->
+            state =
+              state
+              |> maybe_park_issue_after_token_cap(updated_running_entry)
+              |> terminate_running_issue(issue_id, false)
+
+            notify_dashboard()
+            {:noreply, state}
+
+          false ->
+            notify_dashboard()
+            {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        end
     end
   end
 
@@ -1725,6 +1737,50 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp running_seconds(_started_at, _now), do: 0
+
+  defp token_cap_exceeded?(running_entry) when is_map(running_entry) do
+    case Config.max_tokens_per_attempt() do
+      cap when is_integer(cap) and cap > 0 ->
+        Map.get(running_entry, :codex_total_tokens, 0) > cap
+
+      _ ->
+        false
+    end
+  end
+
+  defp token_cap_exceeded?(_running_entry), do: false
+
+  defp maybe_park_issue_after_token_cap(%State{} = state, running_entry) when is_map(running_entry) do
+    issue = Map.get(running_entry, :issue)
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    cap = Config.max_tokens_per_attempt()
+    identifier = Map.get(running_entry, :identifier, "unknown")
+
+    Logger.warning(
+      "Token cap exceeded for issue_id=#{Map.get(issue, :id)} issue_identifier=#{identifier}: total_tokens=#{total_tokens} cap=#{inspect(cap)}; stopping active run"
+    )
+
+    maybe_transition_to_backlog(issue, identifier)
+    state
+  end
+
+  defp maybe_park_issue_after_token_cap(%State{} = state, _running_entry), do: state
+
+  defp maybe_transition_to_backlog(%Issue{} = issue, identifier) do
+    if Config.settings!().tracker.kind == "gitea" do
+      case Tracker.update_issue_state(issue.id, "Backlog") do
+        :ok ->
+          Logger.info("Moved issue to Backlog after token cap stop: issue_identifier=#{identifier}")
+
+        {:error, reason} ->
+          Logger.warning(
+            "Failed to move issue to Backlog after token cap stop: issue_identifier=#{identifier} reason=#{inspect(reason)}"
+          )
+      end
+    end
+  end
+
+  defp maybe_transition_to_backlog(_issue, _identifier), do: :ok
 
   defp integer_like(value) when is_integer(value) and value >= 0, do: value
 

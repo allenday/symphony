@@ -387,6 +387,89 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.codex_totals.total_tokens == 15
   end
 
+  test "orchestrator stops active run when per-attempt token cap is exceeded" do
+    write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_attempt: 10)
+
+    issue_id = "issue-token-cap-stop"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-512",
+      title: "Token cap stop test",
+      description: "Run should stop when cumulative tokens exceed cap",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-512"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :TokenCapStopOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "type" => "token_count",
+               "info" => %{
+                 "total_token_usage" => %{
+                   "input_tokens" => 8,
+                   "output_tokens" => 4,
+                   "total_tokens" => 12
+                 }
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{running: []} -> true
+        _ -> false
+      end)
+
+    assert snapshot.running == []
+  end
+
   test "orchestrator snapshot tracks codex rate-limit payloads" do
     issue_id = "issue-rate-limit-snapshot"
 

@@ -25,6 +25,7 @@ defmodule SymphonyElixir.CoreTest do
 
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.agent.max_tokens_per_attempt == nil
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -44,6 +45,13 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_attempt: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.max_tokens_per_attempt"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_attempt: 400_000)
+    assert Config.settings!().agent.max_tokens_per_attempt == 400_000
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()

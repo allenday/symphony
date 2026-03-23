@@ -22,6 +22,8 @@ COPY elixir/priv ./priv
 COPY elixir/WORKFLOW.docker.gitea.md ./WORKFLOW.docker.gitea.md
 COPY elixir/WORKFLOW.docker.gitea.builder.md ./WORKFLOW.docker.gitea.builder.md
 COPY elixir/WORKFLOW.docker.gitea.reviewer.md ./WORKFLOW.docker.gitea.reviewer.md
+COPY elixir/WORKFLOW.docker.gitea.triage.md ./WORKFLOW.docker.gitea.triage.md
+COPY elixir/WORKFLOW.docker.gitea.controller.md ./WORKFLOW.docker.gitea.controller.md
 
 RUN mix local.hex --force \
  && mix local.rebar --force \

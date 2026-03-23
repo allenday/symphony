@@ -207,10 +207,11 @@ defmodule SymphonyElixir.GiteaClientTest do
     issue = %Issue{id: "30", identifier: "symphony#30"}
 
     comment =
-      Client.review_handoff_failure_comment_for_test(
+      Client.controller_guard_comment_for_test(
         issue,
         {:missing_requested_reviewer, 57},
-        "builder"
+        "builder",
+        "To Do"
       )
 
     assert comment =~ "## Symphony Controller"
@@ -218,5 +219,37 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert comment =~ "issue_identifier: symphony#30"
     assert comment =~ "next_owner: builder"
     assert comment =~ "actions_taken: comment, assign:builder, state:To Do"
+  end
+
+  test "controller remediation comment includes triage anomaly id" do
+    issue = %Issue{id: "29", identifier: "symphony#29"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        :missing_triage_budget,
+        "planner",
+        "Backlog"
+      )
+
+    assert comment =~ "anomaly_id: A01_TRIAGE_MISSING_BUDGET"
+    assert comment =~ "next_owner: planner"
+    assert comment =~ "state:Backlog"
+  end
+
+  test "controller remediation comment includes dependency-block anomaly id" do
+    issue = %Issue{id: "30", identifier: "symphony#30"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:dependency_blocked, [29, 28]},
+        "reviewer",
+        "Done"
+      )
+
+    assert comment =~ "anomaly_id: A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE"
+    assert comment =~ "#29"
+    assert comment =~ "#28"
   end
 end

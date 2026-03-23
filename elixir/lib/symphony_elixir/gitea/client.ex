@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Gitea.Client do
 
   require Logger
 
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{Config, Linear.Issue, TriageBudget}
 
   @page_size 50
 
@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Gitea.Client do
       board_snapshot = maybe_fetch_project_board_snapshot(tracker)
       normalized = Enum.map(issues, &normalize_issue(&1, board_snapshot))
       selected = select_candidate_issues(normalized, tracker.active_states, tracker.assignee)
-      {:ok, maybe_enforce_review_handoff_guard(tracker, selected)}
+      {:ok, maybe_enforce_candidate_guards(tracker, selected, issues, board_snapshot)}
     end
   end
 
@@ -55,9 +55,9 @@ defmodule SymphonyElixir.Gitea.Client do
   def required_pr_ci_success_for_test(statuses), do: required_pr_ci_success?(statuses)
 
   @doc false
-  @spec review_handoff_failure_comment_for_test(Issue.t(), term(), String.t()) :: String.t()
-  def review_handoff_failure_comment_for_test(issue, reason, builder_assignee),
-    do: review_handoff_failure_comment(issue, reason, builder_assignee)
+  @spec controller_guard_comment_for_test(Issue.t(), term(), String.t(), String.t()) :: String.t()
+  def controller_guard_comment_for_test(issue, reason, next_owner, target_state),
+    do: controller_guard_comment(issue, reason, next_owner, target_state)
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
@@ -432,34 +432,89 @@ defmodule SymphonyElixir.Gitea.Client do
     end)
   end
 
-  defp maybe_enforce_review_handoff_guard(tracker, issues) when is_list(issues) do
-    if normalize_assignee(tracker.assignee) == "reviewer" do
-      issues
-      |> Enum.reduce([], fn issue, acc ->
-        case review_handoff_guard_result(tracker, issue) do
-          :ok ->
-            [issue | acc]
+  defp maybe_enforce_candidate_guards(tracker, issues, raw_issues, board_snapshot) when is_list(issues) do
+    raw_by_issue_number =
+      raw_issues
+      |> Enum.filter(&is_map/1)
+      |> Map.new(fn raw -> {to_string(Map.get(raw, "number")), raw} end)
 
-          {:error, reason} ->
-            enforce_review_handoff_remediation(tracker, issue, reason)
-            acc
-        end
-      end)
-      |> Enum.reverse()
+    role = normalize_assignee(tracker.assignee)
+
+    issues
+    |> Enum.reduce([], fn issue, acc ->
+      case candidate_guard_result(tracker, role, issue, raw_by_issue_number, board_snapshot) do
+        :ok ->
+          [issue | acc]
+
+        {:error, reason} ->
+          enforce_candidate_guard_remediation(tracker, role, issue, reason)
+          acc
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp maybe_enforce_candidate_guards(_tracker, issues, _raw_issues, _board_snapshot), do: issues
+
+  defp candidate_guard_result(tracker, role, %Issue{} = issue, raw_by_issue_number, board_snapshot) do
+    with :ok <- project_membership_guard_result(issue, raw_by_issue_number, board_snapshot),
+         :ok <- triage_ready_guard_result(tracker, role, issue),
+         :ok <- review_handoff_guard_result(tracker, role, issue) do
+      :ok
     else
-      issues
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp maybe_enforce_review_handoff_guard(_tracker, issues), do: issues
+  defp candidate_guard_result(_tracker, _role, _issue, _raw_by_issue_number, _board_snapshot), do: :ok
 
-  defp review_handoff_guard_result(_tracker, %Issue{} = issue)
+  defp project_membership_guard_result(%Issue{} = issue, raw_by_issue_number, board_snapshot) do
+    if is_map(board_snapshot) and map_size(Map.get(board_snapshot, :issue_column_key_by_internal_id, %{})) > 0 do
+      raw_issue = Map.get(raw_by_issue_number, issue.id)
+      internal_id = raw_issue && parse_integer_or_nil(Map.get(raw_issue, "id"))
+      board_map = Map.get(board_snapshot, :issue_column_key_by_internal_id, %{})
+
+      if is_integer(internal_id) and Map.has_key?(board_map, internal_id) do
+        :ok
+      else
+        {:error, :missing_project_membership}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp project_membership_guard_result(_issue, _raw_by_issue_number, _board_snapshot), do: :ok
+
+  defp triage_ready_guard_result(tracker, role, %Issue{} = issue) do
+    if role == "builder" and state_match_key(issue.state) in ["todo", "inprogress"] do
+      with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
+           budget when is_map(budget) <- TriageBudget.from_comments(comments),
+           true <- Map.get(budget, :ready) == true do
+        :ok
+      else
+        nil -> {:error, :missing_triage_budget}
+        false -> {:error, :triage_not_ready}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp triage_ready_guard_result(_tracker, _role, _issue), do: :ok
+
+  defp review_handoff_guard_result(_tracker, role, %Issue{} = _issue) when role != "reviewer",
+    do: :ok
+
+  defp review_handoff_guard_result(_tracker, _role, %Issue{} = issue)
        when not is_binary(issue.state),
        do: :ok
 
-  defp review_handoff_guard_result(tracker, %Issue{} = issue) do
+  defp review_handoff_guard_result(tracker, _role, %Issue{} = issue) do
     if state_match_key(issue.state) == "done" do
-      with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
+      with :ok <- dependency_block_guard_result(tracker, issue),
+           {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
            {:ok, pr_number} <- extract_linked_pull_number(comments),
            {:ok, pull} <- fetch_pull_request(tracker, pr_number),
            :ok <- requested_reviewer_present?(pull, "reviewer"),
@@ -475,31 +530,74 @@ defmodule SymphonyElixir.Gitea.Client do
     end
   end
 
-  defp review_handoff_guard_result(_tracker, _issue), do: :ok
+  defp review_handoff_guard_result(_tracker, _role, _issue), do: :ok
 
-  defp enforce_review_handoff_remediation(tracker, %Issue{} = issue, reason) do
-    key = {:review_handoff_guard, issue.id, inspect(reason)}
+  defp dependency_block_guard_result(tracker, %Issue{} = issue) do
+    case fetch_issue_dependencies(tracker, issue.id) do
+      {:ok, dependencies} when is_list(dependencies) ->
+        open_dependencies =
+          dependencies
+          |> Enum.filter(fn dep -> normalize_state(Map.get(dep, "state")) != "closed" end)
+          |> Enum.map(fn dep -> Map.get(dep, "number") end)
+          |> Enum.filter(&is_integer/1)
+
+        if open_dependencies == [] do
+          :ok
+        else
+          {:error, {:dependency_blocked, open_dependencies}}
+        end
+
+      {:ok, _other} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp enforce_candidate_guard_remediation(tracker, role, %Issue{} = issue, reason) do
+    key = {:candidate_guard, issue.id, role, inspect(reason)}
 
     warn_once(key, fn ->
-      "Review handoff guard failed for issue=#{issue.identifier || issue.id}: #{inspect(reason)}"
+      "Candidate guard failed role=#{role} issue=#{issue.identifier || issue.id}: #{inspect(reason)}"
     end)
 
     builder_assignee = System.get_env("GITEA_BUILDER_ASSIGNEE", "builder")
+    planner_assignee = System.get_env("GITEA_TRIAGE_ASSIGNEE", "planner")
 
-    _ =
-      create_comment(
-        issue.id,
-        review_handoff_failure_comment(issue, reason, builder_assignee)
-      )
+    case reason do
+      :missing_triage_budget ->
+        _ = create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
+        _ = set_issue_assignee(tracker, issue.id, planner_assignee)
+        _ = update_issue_state(issue.id, "Backlog")
+        :ok
 
-    _ = set_issue_assignee(tracker, issue.id, builder_assignee)
-    _ = update_issue_state(issue.id, "To Do")
-    :ok
+      :triage_not_ready ->
+        _ = create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
+        _ = set_issue_assignee(tracker, issue.id, planner_assignee)
+        _ = update_issue_state(issue.id, "Backlog")
+        :ok
+
+      :missing_project_membership ->
+        _ = create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
+        _ = set_issue_assignee(tracker, issue.id, planner_assignee)
+        :ok
+
+      {:dependency_blocked, _deps} ->
+        _ = create_comment(issue.id, controller_guard_comment(issue, reason, normalize_assignee(issue.assignee_id) || "reviewer", "Done"))
+        :ok
+
+      _ ->
+        _ = create_comment(issue.id, controller_guard_comment(issue, reason, builder_assignee, "To Do"))
+        _ = set_issue_assignee(tracker, issue.id, builder_assignee)
+        _ = update_issue_state(issue.id, "To Do")
+        :ok
+    end
   end
 
-  defp enforce_review_handoff_remediation(_tracker, _issue, _reason), do: :ok
+  defp enforce_candidate_guard_remediation(_tracker, _role, _issue, _reason), do: :ok
 
-  defp review_handoff_failure_comment(issue, reason, builder_assignee) do
+  defp controller_guard_comment(issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
     detected_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
@@ -509,9 +607,9 @@ defmodule SymphonyElixir.Gitea.Client do
     detected_at: #{detected_at}
     issue_identifier: #{issue.identifier || issue.id}
     reason: #{humanize_review_guard_reason(reason)}
-    actions_taken: comment, assign:#{builder_assignee}, state:To Do
-    next_owner: #{builder_assignee}
-    expected_recovery: add reviewer request on linked PR and ensure ci/woodpecker/pr/woodpecker is success, then hand off to Done again
+    actions_taken: comment, assign:#{next_owner}, state:#{target_state}
+    next_owner: #{next_owner}
+    expected_recovery: #{controller_expected_recovery(reason)}
     """
   end
 
@@ -527,6 +625,11 @@ defmodule SymphonyElixir.Gitea.Client do
   defp controller_anomaly_id({:pr_ci_not_success, _context, _status}),
     do: "A06_REVIEW_HANDOFF_PR_CI_NOT_GREEN"
 
+  defp controller_anomaly_id(:missing_triage_budget), do: "A01_TRIAGE_MISSING_BUDGET"
+  defp controller_anomaly_id(:triage_not_ready), do: "A02_TRIAGE_NOT_READY_PROMOTED"
+  defp controller_anomaly_id({:dependency_blocked, _deps}), do: "A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE"
+  defp controller_anomaly_id(:missing_project_membership), do: "A09_PROJECT_MEMBERSHIP_MISSING"
+
   defp controller_anomaly_id(_reason), do: "A00_UNKNOWN_CONTROLLER_GUARD"
 
   defp humanize_review_guard_reason({:missing_linked_pull, _issue_id}),
@@ -541,7 +644,46 @@ defmodule SymphonyElixir.Gitea.Client do
   defp humanize_review_guard_reason({:pr_ci_not_success, context, status}),
     do: "PR required CI status `#{context}` is `#{status}` (expected `success`)."
 
+  defp humanize_review_guard_reason(:missing_triage_budget),
+    do: "Issue moved into active delivery state without a `## Symphony Triage` budget block."
+
+  defp humanize_review_guard_reason(:triage_not_ready),
+    do: "Issue triage block exists but `ready` is not `true`."
+
+  defp humanize_review_guard_reason({:dependency_blocked, deps}),
+    do: "Issue closure is blocked by open dependencies: #{Enum.map_join(deps, ", ", &"##{&1}")}."
+
+  defp humanize_review_guard_reason(:missing_project_membership),
+    do: "Issue is not present on the configured project board."
+
   defp humanize_review_guard_reason(other), do: inspect(other)
+
+  defp controller_expected_recovery({:missing_linked_pull, _issue_id}),
+    do: "link the implementation PR in issue comments, then hand off to Done again"
+
+  defp controller_expected_recovery({:missing_requested_reviewer, _pr_number}),
+    do: "request reviewer on the linked PR and keep handoff evidence in the issue"
+
+  defp controller_expected_recovery({:missing_pr_ci_status, context}),
+    do: "publish required PR status context `#{context}` and re-handoff"
+
+  defp controller_expected_recovery({:pr_ci_not_success, context, _status}),
+    do: "fix PR CI so `#{context}` is success, then hand off to Done again"
+
+  defp controller_expected_recovery(:missing_triage_budget),
+    do: "triage role must add `## Symphony Triage` metadata and set ready=true before promotion"
+
+  defp controller_expected_recovery(:triage_not_ready),
+    do: "triage role must resolve scope blockers and set ready=true before promotion"
+
+  defp controller_expected_recovery({:dependency_blocked, _deps}),
+    do: "close or unlink blocking dependencies, then retry close"
+
+  defp controller_expected_recovery(:missing_project_membership),
+    do: "add the issue to the configured project board and place it in the intended column"
+
+  defp controller_expected_recovery(_reason),
+    do: "inspect controller logs and resolve prerequisites before retrying handoff"
 
   defp extract_linked_pull_number(comments) when is_list(comments) do
     comments
@@ -571,6 +713,16 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp extract_linked_pull_number(_comments), do: {:error, {:missing_linked_pull, nil}}
+
+  defp fetch_issue_dependencies(tracker, issue_id) when is_binary(issue_id) do
+    request(
+      tracker,
+      :get,
+      "/repos/#{tracker.owner}/#{tracker.repo}/issues/#{issue_index(issue_id)}/dependencies"
+    )
+  end
+
+  defp fetch_issue_dependencies(_tracker, _issue_id), do: {:error, :invalid_issue_id}
 
   defp fetch_pull_request(tracker, pull_number) when is_integer(pull_number) and pull_number > 0 do
     request(tracker, :get, "/repos/#{tracker.owner}/#{tracker.repo}/pulls/#{pull_number}")

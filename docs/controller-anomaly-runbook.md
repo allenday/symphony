@@ -46,6 +46,7 @@ Backends map these capabilities to concrete APIs.
 | `A06_REVIEW_HANDOFF_PR_CI_NOT_GREEN` | Required CI not successful | `state == Done && pr exists && required_ci != success` | `issue.read`, `pr.read`, `ci.read`, `issue.comment.write`, `issue.state.write`, `issue.assignee.write` | comment, assign `builder`, move `To Do` | procedural |
 | `A07_ACTIVE_RUN_STALLED` | Running worker exceeds stall timeout | `running && now - last_activity > stall_timeout` | `issue.read`, `issue.comment.write`, `issue.state.write`, `issue.assignee.write` | terminate run, retry once, then comment + requeue `To Do` | orchestrator/controller |
 | `A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE` | Reviewer accepted but dependency blocks close | `review accepted && close returns dependency failure` | `issue.read`, `issue.comment.write` | comment with blocking dependency IDs, keep `Done` | reviewer/controller |
+| `A09_PROJECT_MEMBERSHIP_MISSING` | Active issue not present on configured board | `project board configured && issue not in board snapshot` | `issue.read`, `project.state.read`, `issue.comment.write`, `issue.assignee.write` | comment, assign `planner`, request board placement before dispatch | controller |
 
 ## Deterministic Action Order
 
@@ -67,5 +68,4 @@ ID and target assignee/state for the current poll window.
 
 ## Current Coverage
 
-- Implemented: `A03`, `A04`, `A05`, `A06` (procedural handoff guard).
-- Planned next: `A01`, `A02`, `A07`, `A08`.
+- Implemented: `A01`, `A02`, `A03`, `A04`, `A05`, `A06`, `A07`, `A08`, `A09`.

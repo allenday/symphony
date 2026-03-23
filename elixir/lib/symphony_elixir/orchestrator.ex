@@ -484,8 +484,10 @@ defmodule SymphonyElixir.Orchestrator do
     if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
+      issue = Map.get(running_entry, :issue)
 
       Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
+      maybe_comment_stalled_anomaly(issue, identifier, elapsed_ms, timeout_ms)
 
       next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -1791,6 +1793,27 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_transition_to_backlog(_issue, _identifier), do: :ok
+
+  defp maybe_comment_stalled_anomaly(%Issue{id: issue_id} = issue, identifier, elapsed_ms, timeout_ms)
+       when is_binary(issue_id) do
+    detected_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    body = """
+    ## Symphony Controller
+    anomaly_id: A07_ACTIVE_RUN_STALLED
+    detected_at: #{detected_at}
+    issue_identifier: #{identifier}
+    reason: No Codex activity for #{elapsed_ms}ms (stall timeout #{timeout_ms}ms).
+    actions_taken: comment, terminate_run, retry_with_backoff
+    next_owner: #{issue.assignee_id || "builder"}
+    expected_recovery: ensure agent resumes progress or requeue to To Do with actionable blocker context
+    """
+
+    _ = Tracker.create_comment(issue_id, body)
+    :ok
+  end
+
+  defp maybe_comment_stalled_anomaly(_issue, _identifier, _elapsed_ms, _timeout_ms), do: :ok
 
   defp integer_like(value) when is_integer(value) and value >= 0, do: value
 

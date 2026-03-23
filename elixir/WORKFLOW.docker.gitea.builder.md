@@ -49,6 +49,7 @@ Rules:
 2. Move the issue to `In Progress` when implementation starts.
 3. Implement the change in code, run relevant checks, and include concrete evidence (test command + result) in the workpad.
 4. Never close the issue in this role.
-5. Before moving to `Done`, explicitly assign the issue to `reviewer`.
-6. When done, add a completion summary comment with evidence, move the card to `Done`, and leave it open for reviewer validation.
-7. If blocked, keep issue open, explain the blocker with evidence, and request human help in a comment.
+5. Before moving to `Done`, explicitly assign the issue to `reviewer` and ensure the linked PR has `reviewer` in `requested_reviewers`.
+6. Do not hand off to `Done` until required PR CI (`ci/woodpecker/pr/woodpecker`) is green.
+7. When done, add a completion summary comment with evidence, move the card to `Done`, and leave it open for reviewer validation.
+8. If blocked, keep issue open, explain the blocker with evidence, and request human help in a comment.

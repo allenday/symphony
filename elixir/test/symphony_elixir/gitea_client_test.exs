@@ -174,4 +174,32 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert Client.board_column_key_for_test("In Progress") == "inprogress"
     assert Client.board_column_key_for_test("Human-Review") == "humanreview"
   end
+
+  test "extracts linked pull number from latest issue comments" do
+    comments = [
+      %{"body" => "PR: https://gitea.example.test/org/repo/pulls/11"},
+      %{"body" => "latest link https://gitea.example.test/org/repo/pulls/57"}
+    ]
+
+    assert {:ok, 57} = Client.extract_linked_pull_number_for_test(comments)
+  end
+
+  test "requested reviewer validation detects missing reviewer handoff" do
+    pull = %{
+      "number" => 57,
+      "requested_reviewers" => [%{"login" => "alice"}, %{"login" => "bob"}]
+    }
+
+    assert {:error, {:missing_requested_reviewer, 57}} =
+             Client.requested_reviewer_present_for_test(pull, "reviewer")
+  end
+
+  test "required pr ci validation demands success for woodpecker pr context" do
+    statuses = [
+      %{"context" => "ci/woodpecker/pr/woodpecker", "status" => "failure"}
+    ]
+
+    assert {:error, {:pr_ci_not_success, "ci/woodpecker/pr/woodpecker", "failure"}} =
+             Client.required_pr_ci_success_for_test(statuses)
+  end
 end

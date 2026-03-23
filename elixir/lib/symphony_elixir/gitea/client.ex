@@ -15,7 +15,8 @@ defmodule SymphonyElixir.Gitea.Client do
          {:ok, issues} <- fetch_repo_issues(tracker, "open") do
       board_snapshot = maybe_fetch_project_board_snapshot(tracker)
       normalized = Enum.map(issues, &normalize_issue(&1, board_snapshot))
-      {:ok, select_candidate_issues(normalized, tracker.active_states, tracker.assignee)}
+      selected = select_candidate_issues(normalized, tracker.active_states, tracker.assignee)
+      {:ok, maybe_enforce_review_handoff_guard(tracker, selected)}
     end
   end
 
@@ -39,6 +40,19 @@ defmodule SymphonyElixir.Gitea.Client do
         ]
   def select_candidate_issues_for_test(issues, active_states, assignee),
     do: select_candidate_issues(issues, active_states, assignee)
+
+  @doc false
+  @spec extract_linked_pull_number_for_test([map()]) :: {:ok, pos_integer()} | {:error, term()}
+  def extract_linked_pull_number_for_test(comments), do: extract_linked_pull_number(comments)
+
+  @doc false
+  @spec requested_reviewer_present_for_test(map(), String.t()) :: :ok | {:error, term()}
+  def requested_reviewer_present_for_test(pull, expected_login),
+    do: requested_reviewer_present?(pull, expected_login)
+
+  @doc false
+  @spec required_pr_ci_success_for_test([map()]) :: :ok | {:error, term()}
+  def required_pr_ci_success_for_test(statuses), do: required_pr_ci_success?(statuses)
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
@@ -412,6 +426,205 @@ defmodule SymphonyElixir.Gitea.Client do
       end
     end)
   end
+
+  defp maybe_enforce_review_handoff_guard(tracker, issues) when is_list(issues) do
+    if normalize_assignee(tracker.assignee) == "reviewer" do
+      issues
+      |> Enum.reduce([], fn issue, acc ->
+        case review_handoff_guard_result(tracker, issue) do
+          :ok ->
+            [issue | acc]
+
+          {:error, reason} ->
+            enforce_review_handoff_remediation(tracker, issue, reason)
+            acc
+        end
+      end)
+      |> Enum.reverse()
+    else
+      issues
+    end
+  end
+
+  defp maybe_enforce_review_handoff_guard(_tracker, issues), do: issues
+
+  defp review_handoff_guard_result(_tracker, %Issue{} = issue)
+       when not is_binary(issue.state),
+       do: :ok
+
+  defp review_handoff_guard_result(tracker, %Issue{} = issue) do
+    if state_match_key(issue.state) == "done" do
+      with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
+           {:ok, pr_number} <- extract_linked_pull_number(comments),
+           {:ok, pull} <- fetch_pull_request(tracker, pr_number),
+           :ok <- requested_reviewer_present?(pull, "reviewer"),
+           {:ok, head_sha} <- pull_head_sha(pull),
+           {:ok, statuses} <- fetch_commit_statuses(tracker, head_sha),
+           :ok <- required_pr_ci_success?(statuses) do
+        :ok
+      else
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp review_handoff_guard_result(_tracker, _issue), do: :ok
+
+  defp enforce_review_handoff_remediation(tracker, %Issue{} = issue, reason) do
+    key = {:review_handoff_guard, issue.id, inspect(reason)}
+
+    warn_once(key, fn ->
+      "Review handoff guard failed for issue=#{issue.identifier || issue.id}: #{inspect(reason)}"
+    end)
+
+    builder_assignee = System.get_env("GITEA_BUILDER_ASSIGNEE", "builder")
+
+    _ =
+      create_comment(
+        issue.id,
+        review_handoff_failure_comment(issue, reason, builder_assignee)
+      )
+
+    _ = set_issue_assignee(tracker, issue.id, builder_assignee)
+    _ = update_issue_state(issue.id, "To Do")
+    :ok
+  end
+
+  defp enforce_review_handoff_remediation(_tracker, _issue, _reason), do: :ok
+
+  defp review_handoff_failure_comment(issue, reason, builder_assignee) do
+    """
+    ## Symphony Controller Guard
+    Review handoff blocked for #{issue.identifier || issue.id}.
+
+    Missing review prerequisites:
+    - #{humanize_review_guard_reason(reason)}
+
+    Automatic remediation:
+    - moved issue back to `To Do`
+    - assigned issue to `#{builder_assignee}`
+
+    Builder must update the linked PR with requested reviewer and green PR CI, then hand off again.
+    """
+  end
+
+  defp humanize_review_guard_reason({:missing_linked_pull, _issue_id}),
+    do: "No linked PR found in issue comments."
+
+  defp humanize_review_guard_reason({:missing_requested_reviewer, pr_number}),
+    do: "PR ##{pr_number} does not include `reviewer` in requested reviewers."
+
+  defp humanize_review_guard_reason({:missing_pr_ci_status, context}),
+    do: "PR required CI status `#{context}` is missing."
+
+  defp humanize_review_guard_reason({:pr_ci_not_success, context, status}),
+    do: "PR required CI status `#{context}` is `#{status}` (expected `success`)."
+
+  defp humanize_review_guard_reason(other), do: inspect(other)
+
+  defp extract_linked_pull_number(comments) when is_list(comments) do
+    comments
+    |> Enum.reverse()
+    |> Enum.find_value(fn comment ->
+      body = Map.get(comment, "body") || Map.get(comment, :body)
+
+      if is_binary(body) do
+        case Regex.run(~r{/pulls/(\d+)}, body) do
+          [_, raw_number] ->
+            case Integer.parse(raw_number) do
+              {parsed, ""} when parsed > 0 -> parsed
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+      else
+        nil
+      end
+    end)
+    |> case do
+      nil -> {:error, {:missing_linked_pull, nil}}
+      number -> {:ok, number}
+    end
+  end
+
+  defp extract_linked_pull_number(_comments), do: {:error, {:missing_linked_pull, nil}}
+
+  defp fetch_pull_request(tracker, pull_number) when is_integer(pull_number) and pull_number > 0 do
+    request(tracker, :get, "/repos/#{tracker.owner}/#{tracker.repo}/pulls/#{pull_number}")
+  end
+
+  defp fetch_pull_request(_tracker, _pull_number), do: {:error, :invalid_pull_number}
+
+  defp requested_reviewer_present?(pull, expected_login) when is_map(pull) and is_binary(expected_login) do
+    reviewers =
+      pull
+      |> Map.get("requested_reviewers", [])
+      |> Enum.map(fn reviewer ->
+        reviewer
+        |> Map.get("login")
+        |> normalize_assignee()
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    if normalize_assignee(expected_login) in reviewers do
+      :ok
+    else
+      {:error, {:missing_requested_reviewer, Map.get(pull, "number")}}
+    end
+  end
+
+  defp requested_reviewer_present?(_pull, _expected_login), do: {:error, :invalid_pull_payload}
+
+  defp pull_head_sha(pull) when is_map(pull) do
+    case get_in(pull, ["head", "sha"]) do
+      sha when is_binary(sha) and byte_size(sha) > 0 -> {:ok, sha}
+      _ -> {:error, :missing_pull_head_sha}
+    end
+  end
+
+  defp pull_head_sha(_pull), do: {:error, :invalid_pull_payload}
+
+  defp fetch_commit_statuses(tracker, sha) when is_binary(sha) and byte_size(sha) > 0 do
+    request(tracker, :get, "/repos/#{tracker.owner}/#{tracker.repo}/commits/#{sha}/statuses")
+  end
+
+  defp fetch_commit_statuses(_tracker, _sha), do: {:error, :invalid_commit_sha}
+
+  defp required_pr_ci_success?(statuses) when is_list(statuses) do
+    required_context = "ci/woodpecker/pr/woodpecker"
+
+    case Enum.find(statuses, fn status -> Map.get(status, "context") == required_context end) do
+      nil ->
+        {:error, {:missing_pr_ci_status, required_context}}
+
+      status ->
+        case normalize_state(Map.get(status, "status")) do
+          "success" -> :ok
+          other -> {:error, {:pr_ci_not_success, required_context, other}}
+        end
+    end
+  end
+
+  defp required_pr_ci_success?(_statuses), do: {:error, :invalid_pr_ci_status_payload}
+
+  defp set_issue_assignee(tracker, issue_id, assignee)
+       when is_binary(issue_id) and is_binary(assignee) do
+    case request(
+           tracker,
+           :patch,
+           "/repos/#{tracker.owner}/#{tracker.repo}/issues/#{issue_index(issue_id)}",
+           %{assignee: assignee}
+         ) do
+      {:ok, _response} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp set_issue_assignee(_tracker, _issue_id, _assignee), do: {:error, :invalid_assignee_payload}
 
   defp reviewer_watchdog_takeover?(
          "reviewer",

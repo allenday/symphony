@@ -172,6 +172,24 @@ Runtime behavior:
 - `hard_cap_tokens` overrides the global per-attempt cap for that issue.
 - `ready: true` is the signal for triage to hand off to `To Do` and assign `builder`.
 
+### Controller intervention block
+
+Procedural guardrails and controller interventions should use a typed comment block:
+
+```text
+## Symphony Controller
+anomaly_id: A04_REVIEW_HANDOFF_MISSING_REVIEWER_REQUEST
+detected_at: 2026-03-23T10:11:12Z
+issue_identifier: symphony#30
+reason: PR #57 does not include reviewer in requested reviewers.
+actions_taken: comment, assign:builder, state:To Do
+next_owner: builder
+expected_recovery: add reviewer request on linked PR and ensure ci/woodpecker/pr/woodpecker is success, then hand off to Done again
+```
+
+Use `anomaly_id` to map interventions to the controller anomaly matrix in:
+`docs/plans/2026-03-23-controller-anomaly-matrix-and-remediation-runbook.md`.
+
 ### Tracker reachability
 
 Symptoms:

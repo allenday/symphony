@@ -138,7 +138,7 @@ docker compose exec symphony sh -lc 'grep -nE "Dispatching issue|Issue moved to 
 What to verify:
 
 - the issue is in an active board state for this workflow: `To Do` or `In Progress` (builder), or
-  `Done`/`In Progress` for reviewer
+  `Done` for reviewer
 - the issue assignee login matches `GITEA_ASSIGNEE`
 - the issue is on the configured repository project board, not only open in the issue list
 - if board sync is expected, `GITEA_WEB_COOKIE` and `GITEA_WEB_CSRF_TOKEN` are valid

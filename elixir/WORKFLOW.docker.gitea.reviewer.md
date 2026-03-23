@@ -11,7 +11,6 @@ tracker:
   web_csrf_token: $GITEA_WEB_CSRF_TOKEN
   active_states:
     - Done
-    - In Progress
   terminal_states:
     - Closed
     - Cancelled

@@ -49,4 +49,14 @@ defmodule SymphonyElixir.TriageBudgetTest do
 
     assert TriageBudget.from_issue(issue) == nil
   end
+
+  test "parses triage block from raw tracker comments" do
+    comments = [
+      %{"body" => "noise"},
+      %{"body" => "## Symphony Triage\nestimate_tokens: 1000\nsoft_cap_tokens: 2000\nhard_cap_tokens: 3000\nready: true"}
+    ]
+
+    assert %{estimate_tokens: 1000, soft_cap_tokens: 2000, hard_cap_tokens: 3000, ready: true} =
+             TriageBudget.from_comments(comments)
+  end
 end

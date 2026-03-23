@@ -16,12 +16,19 @@ defmodule SymphonyElixir.TriageBudget do
 
   @spec from_issue(Issue.t() | term()) :: t() | nil
   def from_issue(%Issue{comments: comments}) when is_list(comments) do
+    from_comments(comments)
+  end
+
+  def from_issue(_issue), do: nil
+
+  @spec from_comments([map()]) :: t() | nil
+  def from_comments(comments) when is_list(comments) do
     comments
     |> Enum.reverse()
     |> Enum.find_value(&parse_comment/1)
   end
 
-  def from_issue(_issue), do: nil
+  def from_comments(_comments), do: nil
 
   @spec hard_cap_tokens(t() | nil) :: pos_integer() | nil
   def hard_cap_tokens(%{} = budget), do: positive_integer(Map.get(budget, :hard_cap_tokens))

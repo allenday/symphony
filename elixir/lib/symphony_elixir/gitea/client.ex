@@ -15,8 +15,9 @@ defmodule SymphonyElixir.Gitea.Client do
          {:ok, issues} <- fetch_repo_issues(tracker, "open") do
       board_snapshot = maybe_fetch_project_board_snapshot(tracker)
       normalized = Enum.map(issues, &normalize_issue(&1, board_snapshot))
-      selected = select_candidate_issues(normalized, tracker.active_states, tracker.assignee)
-      {:ok, maybe_enforce_candidate_guards(tracker, selected, issues, board_snapshot)}
+      role = tracker_role(tracker)
+      selected = select_candidate_issues_for_role(normalized, issues, tracker.active_states, tracker.assignee, role)
+      {:ok, maybe_enforce_candidate_guards(tracker, selected, issues, board_snapshot, role)}
     end
   end
 
@@ -40,6 +41,11 @@ defmodule SymphonyElixir.Gitea.Client do
         ]
   def select_candidate_issues_for_test(issues, active_states, assignee),
     do: select_candidate_issues(issues, active_states, assignee)
+
+  @doc false
+  @spec select_controller_candidates_for_test([Issue.t()], [map()]) :: [Issue.t()]
+  def select_controller_candidates_for_test(issues, raw_issues),
+    do: select_controller_candidates(issues, raw_issues)
 
   @doc false
   @spec extract_linked_pull_number_for_test([map()]) :: {:ok, pos_integer()} | {:error, term()}
@@ -432,13 +438,12 @@ defmodule SymphonyElixir.Gitea.Client do
     end)
   end
 
-  defp maybe_enforce_candidate_guards(tracker, issues, raw_issues, board_snapshot) when is_list(issues) do
+  defp maybe_enforce_candidate_guards(tracker, issues, raw_issues, board_snapshot, role)
+       when is_list(issues) do
     raw_by_issue_number =
       raw_issues
       |> Enum.filter(&is_map/1)
       |> Map.new(fn raw -> {to_string(Map.get(raw, "number")), raw} end)
-
-    role = normalize_assignee(tracker.assignee)
 
     issues
     |> Enum.reduce([], fn issue, acc ->
@@ -454,7 +459,7 @@ defmodule SymphonyElixir.Gitea.Client do
     |> Enum.reverse()
   end
 
-  defp maybe_enforce_candidate_guards(_tracker, issues, _raw_issues, _board_snapshot), do: issues
+  defp maybe_enforce_candidate_guards(_tracker, issues, _raw_issues, _board_snapshot, _role), do: issues
 
   defp candidate_guard_result(tracker, role, %Issue{} = issue, raw_by_issue_number, board_snapshot) do
     with :ok <- project_membership_guard_result(issue, raw_by_issue_number, board_snapshot),
@@ -487,7 +492,7 @@ defmodule SymphonyElixir.Gitea.Client do
   defp project_membership_guard_result(_issue, _raw_by_issue_number, _board_snapshot), do: :ok
 
   defp triage_ready_guard_result(tracker, role, %Issue{} = issue) do
-    if role == "builder" and state_match_key(issue.state) in ["todo", "inprogress"] do
+    if role in ["builder", "controller"] and state_match_key(issue.state) in ["todo", "inprogress"] do
       with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
            budget when is_map(budget) <- TriageBudget.from_comments(comments),
            true <- Map.get(budget, :ready) == true do
@@ -504,7 +509,8 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp triage_ready_guard_result(_tracker, _role, _issue), do: :ok
 
-  defp review_handoff_guard_result(_tracker, role, %Issue{} = _issue) when role != "reviewer",
+  defp review_handoff_guard_result(_tracker, role, %Issue{} = _issue)
+       when role not in ["reviewer", "controller"],
     do: :ok
 
   defp review_handoff_guard_result(_tracker, _role, %Issue{} = issue)
@@ -579,16 +585,24 @@ defmodule SymphonyElixir.Gitea.Client do
         :ok
 
       :missing_project_membership ->
-        _ = create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
+        maybe_create_controller_comment(tracker, issue, reason, planner_assignee, "Backlog")
         _ = set_issue_assignee(tracker, issue.id, planner_assignee)
+        _ = update_issue_state(issue.id, "Backlog")
         :ok
 
       {:dependency_blocked, _deps} ->
-        _ = create_comment(issue.id, controller_guard_comment(issue, reason, normalize_assignee(issue.assignee_id) || "reviewer", "Done"))
+        maybe_create_controller_comment(
+          tracker,
+          issue,
+          reason,
+          normalize_assignee(issue.assignee_id) || "reviewer",
+          "Done"
+        )
+
         :ok
 
       _ ->
-        _ = create_comment(issue.id, controller_guard_comment(issue, reason, builder_assignee, "To Do"))
+        maybe_create_controller_comment(tracker, issue, reason, builder_assignee, "To Do")
         _ = set_issue_assignee(tracker, issue.id, builder_assignee)
         _ = update_issue_state(issue.id, "To Do")
         :ok
@@ -596,6 +610,33 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp enforce_candidate_guard_remediation(_tracker, _role, _issue, _reason), do: :ok
+
+  defp maybe_create_controller_comment(tracker, issue, reason, next_owner, target_state) do
+    anomaly_id = controller_anomaly_id(reason)
+
+    if recent_controller_comment_exists?(tracker, issue.id, anomaly_id) do
+      :ok
+    else
+      create_comment(issue.id, controller_guard_comment(issue, reason, next_owner, target_state))
+    end
+  end
+
+  defp recent_controller_comment_exists?(tracker, issue_id, anomaly_id) do
+    case fetch_issue_comments(tracker, issue_id) do
+      {:ok, comments} when is_list(comments) ->
+        comments
+        |> Enum.reverse()
+        |> Enum.take(10)
+        |> Enum.any?(fn comment ->
+          body = Map.get(comment, "body")
+          is_binary(body) and String.contains?(body, "## Symphony Controller") and
+            String.contains?(body, "anomaly_id: #{anomaly_id}")
+        end)
+
+      _ ->
+        false
+    end
+  end
 
   defp controller_guard_comment(issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
@@ -815,6 +856,59 @@ defmodule SymphonyElixir.Gitea.Client do
       value when is_binary(value) -> String.trim(value) != "0"
       _ -> true
     end
+  end
+
+  defp tracker_role(tracker) do
+    if controller_role_mode?() do
+      "controller"
+    else
+      normalize_assignee(Map.get(tracker, :assignee))
+    end
+  end
+
+  defp controller_role_mode? do
+    explicit =
+      case System.get_env("SYMPHONY_CONTROLLER_MODE") do
+        value when is_binary(value) -> String.downcase(String.trim(value))
+        _ -> nil
+      end
+
+    cond do
+      explicit in ["1", "true", "yes"] ->
+        true
+
+      explicit in ["0", "false", "no"] ->
+        false
+
+      true ->
+        case System.get_env("SYMPHONY_WORKFLOW_FILE") do
+          path when is_binary(path) ->
+            path
+            |> Path.basename()
+            |> String.downcase()
+            |> String.contains?("controller")
+
+          _ ->
+            false
+        end
+    end
+  end
+
+  defp select_candidate_issues_for_role(issues, raw_issues, _active_states, _assignee, "controller"),
+    do: select_controller_candidates(issues, raw_issues)
+
+  defp select_candidate_issues_for_role(issues, _raw_issues, active_states, assignee, _role),
+    do: select_candidate_issues(issues, active_states, assignee)
+
+  defp select_controller_candidates(issues, raw_issues) do
+    pull_issue_numbers =
+      raw_issues
+      |> Enum.filter(&is_map/1)
+      |> Enum.filter(&(not is_nil(Map.get(&1, "pull_request"))))
+      |> Enum.map(&(Map.get(&1, "number") |> to_string()))
+      |> MapSet.new()
+
+    Enum.reject(issues, fn %Issue{id: id} -> id in pull_issue_numbers end)
   end
 
   defp state_match_key(value) when is_binary(value) do

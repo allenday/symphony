@@ -143,6 +143,24 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert Enum.map(selected, & &1.id) == ["1", "2"]
   end
 
+  test "controller candidate selection is assignee agnostic and excludes pull requests" do
+    issues = [
+      %Issue{id: "1", state: "Backlog", assignee_id: nil},
+      %Issue{id: "2", state: "Done", assignee_id: "reviewer"},
+      %Issue{id: "3", state: "To Do", assignee_id: "builder"}
+    ]
+
+    raw_issues = [
+      %{"number" => 1},
+      %{"number" => 2, "pull_request" => %{"url" => "https://example.test/pulls/2"}},
+      %{"number" => 3}
+    ]
+
+    selected = Client.select_controller_candidates_for_test(issues, raw_issues)
+
+    assert Enum.map(selected, & &1.id) == ["1", "3"]
+  end
+
   test "parses project board HTML into column and issue mappings" do
     html = """
     <div id="project-board">

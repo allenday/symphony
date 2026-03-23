@@ -54,6 +54,11 @@ defmodule SymphonyElixir.Gitea.Client do
   @spec required_pr_ci_success_for_test([map()]) :: :ok | {:error, term()}
   def required_pr_ci_success_for_test(statuses), do: required_pr_ci_success?(statuses)
 
+  @doc false
+  @spec review_handoff_failure_comment_for_test(Issue.t(), term(), String.t()) :: String.t()
+  def review_handoff_failure_comment_for_test(issue, reason, builder_assignee),
+    do: review_handoff_failure_comment(issue, reason, builder_assignee)
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
     requested = state_names |> Enum.map(&normalize_state/1) |> MapSet.new()
@@ -495,20 +500,34 @@ defmodule SymphonyElixir.Gitea.Client do
   defp enforce_review_handoff_remediation(_tracker, _issue, _reason), do: :ok
 
   defp review_handoff_failure_comment(issue, reason, builder_assignee) do
+    anomaly_id = controller_anomaly_id(reason)
+    detected_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
     """
-    ## Symphony Controller Guard
-    Review handoff blocked for #{issue.identifier || issue.id}.
-
-    Missing review prerequisites:
-    - #{humanize_review_guard_reason(reason)}
-
-    Automatic remediation:
-    - moved issue back to `To Do`
-    - assigned issue to `#{builder_assignee}`
-
-    Builder must update the linked PR with requested reviewer and green PR CI, then hand off again.
+    ## Symphony Controller
+    anomaly_id: #{anomaly_id}
+    detected_at: #{detected_at}
+    issue_identifier: #{issue.identifier || issue.id}
+    reason: #{humanize_review_guard_reason(reason)}
+    actions_taken: comment, assign:#{builder_assignee}, state:To Do
+    next_owner: #{builder_assignee}
+    expected_recovery: add reviewer request on linked PR and ensure ci/woodpecker/pr/woodpecker is success, then hand off to Done again
     """
   end
+
+  defp controller_anomaly_id({:missing_linked_pull, _issue_id}),
+    do: "A03_REVIEW_HANDOFF_MISSING_LINKED_PR"
+
+  defp controller_anomaly_id({:missing_requested_reviewer, _pr_number}),
+    do: "A04_REVIEW_HANDOFF_MISSING_REVIEWER_REQUEST"
+
+  defp controller_anomaly_id({:missing_pr_ci_status, _context}),
+    do: "A05_REVIEW_HANDOFF_MISSING_PR_CI_STATUS"
+
+  defp controller_anomaly_id({:pr_ci_not_success, _context, _status}),
+    do: "A06_REVIEW_HANDOFF_PR_CI_NOT_GREEN"
+
+  defp controller_anomaly_id(_reason), do: "A00_UNKNOWN_CONTROLLER_GUARD"
 
   defp humanize_review_guard_reason({:missing_linked_pull, _issue_id}),
     do: "No linked PR found in issue comments."

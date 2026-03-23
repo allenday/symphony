@@ -202,4 +202,21 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert {:error, {:pr_ci_not_success, "ci/woodpecker/pr/woodpecker", "failure"}} =
              Client.required_pr_ci_success_for_test(statuses)
   end
+
+  test "controller remediation comment uses typed schema with anomaly id" do
+    issue = %Issue{id: "30", identifier: "symphony#30"}
+
+    comment =
+      Client.review_handoff_failure_comment_for_test(
+        issue,
+        {:missing_requested_reviewer, 57},
+        "builder"
+      )
+
+    assert comment =~ "## Symphony Controller"
+    assert comment =~ "anomaly_id: A04_REVIEW_HANDOFF_MISSING_REVIEWER_REQUEST"
+    assert comment =~ "issue_identifier: symphony#30"
+    assert comment =~ "next_owner: builder"
+    assert comment =~ "actions_taken: comment, assign:builder, state:To Do"
+  end
 end

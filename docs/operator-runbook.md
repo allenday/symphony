@@ -3,7 +3,7 @@
 This runbook covers both Docker Compose stacks documented in the repository root README:
 
 - single-service: `docker-compose.yml` + `elixir/WORKFLOW.docker.gitea.md`
-- dual-role: `docker-compose.roles.yml` + role workflows under `elixir/WORKFLOW.docker.gitea.*.md`
+- role-based: `docker-compose.roles.yml` + role workflows under `elixir/WORKFLOW.docker.gitea.*.md`
 
 ## Quick checks
 
@@ -25,14 +25,18 @@ Useful paths and endpoints:
 - Rotating file log in the container: `/var/log/symphony/log/symphony.log`
 - Per-issue workspaces in the container: `/workspaces/<issue_identifier>`
 
-Dual-role equivalents:
+Role-based equivalents:
 
 ```bash
 docker compose -f docker-compose.roles.yml ps
 docker compose -f docker-compose.roles.yml logs -f symphony-builder
 docker compose -f docker-compose.roles.yml logs -f symphony-reviewer
+docker compose -f docker-compose.roles.yml logs -f symphony-triage
+docker compose -f docker-compose.roles.yml logs -f symphony-controller
 docker compose -f docker-compose.roles.yml exec symphony-builder tail -f /var/log/symphony/log/symphony.log
 docker compose -f docker-compose.roles.yml exec symphony-reviewer tail -f /var/log/symphony/log/symphony.log
+docker compose -f docker-compose.roles.yml exec symphony-triage tail -f /var/log/symphony/log/symphony.log
+docker compose -f docker-compose.roles.yml exec symphony-controller tail -f /var/log/symphony/log/symphony.log
 ```
 
 ## Determine current state
@@ -138,13 +142,31 @@ docker compose exec symphony sh -lc 'grep -nE "Dispatching issue|Issue moved to 
 What to verify:
 
 - the issue is in an active board state for this workflow: `To Do` or `In Progress` (builder), or
-  `Done` for reviewer
+  `Done` for reviewer, or `Backlog` for triage
 - the issue assignee login matches `GITEA_ASSIGNEE`
 - the issue is on the configured repository project board, not only open in the issue list
 - if board sync is expected, `GITEA_WEB_COOKIE` and `GITEA_WEB_CSRF_TOKEN` are valid
 
 This workflow ignores items in non-active states such as `Backlog`, and it will stop work when an
 issue leaves the active state set or is no longer routed to the configured worker assignee.
+
+### Triage metadata block
+
+For token budgeting and queue shaping, triage should maintain a dedicated issue comment block:
+
+```text
+## Symphony Triage
+estimate_tokens: 80000
+soft_cap_tokens: 120000
+hard_cap_tokens: 160000
+ready: true
+```
+
+Runtime behavior:
+
+- `soft_cap_tokens` triggers a one-time warning comment from orchestrator when crossed.
+- `hard_cap_tokens` overrides the global per-attempt cap for that issue.
+- `ready: true` is the signal for triage to hand off to `To Do` and assign `builder`.
 
 ### Tracker reachability
 

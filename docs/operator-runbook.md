@@ -149,7 +149,7 @@ What to verify:
   `Done` for reviewer, or `Backlog` for triage
 - the issue assignee login matches `GITEA_ASSIGNEE`
 - the issue is on the configured repository project board, not only open in the issue list
-- if board sync is expected, `GITEA_WEB_COOKIE` and `GITEA_WEB_CSRF_TOKEN` are valid
+- if board sync is expected, `GITEA_WEB_COOKIE` is valid and includes an authenticated session (`gitea_incredible=...`)
 
 This workflow ignores items in non-active states such as `Backlog`, and it will stop work when an
 issue leaves the active state set or is no longer routed to the configured worker assignee.
@@ -211,7 +211,7 @@ What to verify:
 - `GITEA_ENDPOINT` resolves from inside the container
 - `GITEA_API_KEY` still authorizes REST API calls
 - `GITEA_PROJECT_ID` points at the expected project board
-- `GITEA_WEB_COOKIE` and `GITEA_WEB_CSRF_TOKEN` are present if you expect board moves
+- `GITEA_WEB_COOKIE` is present (including `_csrf` and `gitea_incredible`) if you expect board moves
 
 If the REST API call fails, Symphony cannot poll or mutate issues. If only the board page call
 fails, polling may still work while board-state mapping and board moves degrade.

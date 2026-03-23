@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: elixir/docker/Dockerfile
     env_file:
+      - .env.shared
       - .env.builder
     environment:
       SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.builder.md
@@ -19,6 +20,7 @@ services:
       context: .
       dockerfile: elixir/docker/Dockerfile
     env_file:
+      - .env.shared
       - .env.reviewer
     environment:
       SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.reviewer.md
@@ -32,6 +34,7 @@ services:
       context: .
       dockerfile: elixir/docker/Dockerfile
     env_file:
+      - .env.shared
       - .env.triage
     environment:
       SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.triage.md
@@ -45,6 +48,7 @@ services:
       context: .
       dockerfile: elixir/docker/Dockerfile
     env_file:
+      - .env.shared
       - .env.controller
     environment:
       SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.controller.md

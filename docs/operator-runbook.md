@@ -188,7 +188,7 @@ expected_recovery: add reviewer request on linked PR and ensure ci/woodpecker/pr
 ```
 
 Use `anomaly_id` to map interventions to the controller anomaly matrix in:
-`docs/plans/2026-03-23-controller-anomaly-matrix-and-remediation-runbook.md`.
+`docs/controller-anomaly-runbook.md`.
 
 ### Tracker reachability
 

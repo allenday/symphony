@@ -1,13 +1,13 @@
 # Controller Anomaly Matrix And Remediation Runbook
 
-## Goal
+## Purpose
 
-Define a forge-agnostic anomaly catalog and deterministic controller remediations that can be
-executed as procedural checks with optional LLM assist.
+Provide a stable, operator-facing blueprint for controller anomaly detection and deterministic
+remediation actions across forges.
 
-## Typed Controller Comment Contract
+## Typed Comment Contract
 
-Controller interventions must use this parseable block:
+All controller interventions should use this parseable block:
 
 ```text
 ## Symphony Controller
@@ -32,7 +32,7 @@ expected_recovery: add reviewer request on linked PR and ensure ci/woodpecker/pr
 - `pr.requested_reviewer.read`
 - `ci.read`
 
-Backends map these capabilities to concrete endpoints (Gitea, GitHub, Linear+GitHub hybrid, etc).
+Backends map these capabilities to concrete APIs.
 
 ## Anomaly Matrix
 
@@ -47,45 +47,25 @@ Backends map these capabilities to concrete endpoints (Gitea, GitHub, Linear+Git
 | `A07_ACTIVE_RUN_STALLED` | Running worker exceeds stall timeout | `running && now - last_activity > stall_timeout` | `issue.read`, `issue.comment.write`, `issue.state.write`, `issue.assignee.write` | terminate run, retry once, then comment + requeue `To Do` | orchestrator/controller |
 | `A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE` | Reviewer accepted but dependency blocks close | `review accepted && close returns dependency failure` | `issue.read`, `issue.comment.write` | comment with blocking dependency IDs, keep `Done` | reviewer/controller |
 
-## Query Templates
+## Deterministic Action Order
 
-Use these normalized query outputs as controller input:
-
-- `issue_snapshot`: `{id, identifier, state, assignee, labels, comments}`
-- `triage_snapshot`: `{estimate_tokens, soft_cap_tokens, hard_cap_tokens, ready}`
-- `pr_snapshot`: `{number, state, requested_reviewers, head_sha, mergeable}`
-- `ci_snapshot`: `{context -> status}`
-
-## Triggered Actions (Deterministic)
-
-Action ordering is fixed for controller remediations:
+Apply remediations in this order:
 
 1. `issue.comment.write` (typed controller block with anomaly ID)
 2. `issue.assignee.write` (next owner)
-3. `issue.state.write` (target recovery state)
+3. `issue.state.write` (recovery state)
 
-Idempotency rule: if current issue already has same assignee+state and latest controller comment has
-same anomaly ID within the last poll window, skip duplicate writes.
+Idempotency: skip duplicate writes when latest controller comment already records the same anomaly
+ID and target assignee/state for the current poll window.
 
-## Escalation Policy
+## Escalation
 
-- Retry procedural detection every poll.
-- Remediation retries: up to 3 attempts for write failures.
-- After 3 failures, emit `A00_UNKNOWN_CONTROLLER_GUARD` typed comment and stop auto-mutation for
-  that issue until human ack comment is present.
+- Retry detection each poll.
+- Retry mutation writes up to 3 times.
+- After 3 write failures, emit `A00_UNKNOWN_CONTROLLER_GUARD` and stop auto-mutation for that issue
+  until human acknowledgement.
 
-## Controller Runbook
+## Current Coverage
 
-1. Identify anomaly by deterministic query checks.
-2. Emit typed controller comment with anomaly ID.
-3. Apply ordered remediation actions.
-4. Verify post-conditions:
-   - assignee changed as expected
-   - state changed as expected
-   - issue remains visible in expected active state set
-5. If verification fails repeatedly, escalate with `A00_UNKNOWN_CONTROLLER_GUARD`.
-
-## Current Implementation Coverage
-
-- Implemented now: `A03`, `A04`, `A05`, `A06` procedural enforcement in Gitea client handoff guard.
-- Next implementation slice: `A01`, `A02`, `A07`, `A08`.
+- Implemented: `A03`, `A04`, `A05`, `A06` (procedural handoff guard).
+- Planned next: `A01`, `A02`, `A07`, `A08`.

@@ -5,6 +5,10 @@ This runbook covers both Docker Compose stacks documented in the repository root
 - single-service: `docker-compose.yml` + `elixir/WORKFLOW.docker.gitea.md`
 - role-based: `docker-compose.roles.yml` + role workflows under `elixir/WORKFLOW.docker.gitea.*.md`
 
+Related docs:
+
+- downstream history rewrite recovery: [docs/force-push-window-migration.md](force-push-window-migration.md)
+
 ## Quick checks
 
 Start with container state, API state, and the rotating runtime log.

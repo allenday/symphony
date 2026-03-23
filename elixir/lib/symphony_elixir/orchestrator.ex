@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, TriageBudget, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -190,6 +190,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        updated_running_entry = maybe_emit_soft_cap_warning(updated_running_entry)
 
         state =
           state
@@ -744,6 +745,8 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
+            triage_budget: TriageBudget.from_issue(issue),
+            soft_cap_notified: false,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
           })
@@ -1695,7 +1698,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_seconds(_started_at, _now), do: 0
 
   defp token_cap_exceeded?(running_entry) when is_map(running_entry) do
-    case Config.max_tokens_per_attempt() do
+    case hard_cap_for_running_entry(running_entry) do
       cap when is_integer(cap) and cap > 0 ->
         Map.get(running_entry, :codex_total_tokens, 0) > cap
 
@@ -1706,10 +1709,65 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp token_cap_exceeded?(_running_entry), do: false
 
+  defp maybe_emit_soft_cap_warning(running_entry) when is_map(running_entry) do
+    soft_cap = soft_cap_for_running_entry(running_entry)
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    already_notified = Map.get(running_entry, :soft_cap_notified, false)
+    issue = Map.get(running_entry, :issue)
+
+    if is_integer(soft_cap) and soft_cap > 0 and total_tokens > soft_cap and not already_notified and
+         match?(%Issue{id: issue_id} when is_binary(issue_id), issue) do
+      issue_id = issue.id
+      identifier = Map.get(running_entry, :identifier, issue_id || "unknown")
+
+      body = """
+      ## Symphony Triage Alert
+      soft_cap_tokens exceeded for #{identifier}.
+      total_tokens=#{total_tokens}, soft_cap_tokens=#{soft_cap}
+      """
+
+      case Tracker.create_comment(issue_id, body) do
+        :ok ->
+          Logger.warning("Soft cap exceeded for issue_id=#{issue_id} issue_identifier=#{identifier}: total_tokens=#{total_tokens} soft_cap_tokens=#{soft_cap}")
+          Map.put(running_entry, :soft_cap_notified, true)
+
+        {:error, reason} ->
+          Logger.warning("Failed to post soft cap alert for issue_id=#{issue_id}: #{inspect(reason)}")
+          running_entry
+      end
+    else
+      running_entry
+    end
+  end
+
+  defp maybe_emit_soft_cap_warning(running_entry), do: running_entry
+
+  defp hard_cap_for_running_entry(running_entry) when is_map(running_entry) do
+    issue_budget_hard_cap =
+      running_entry
+      |> Map.get(:triage_budget)
+      |> TriageBudget.hard_cap_tokens()
+
+    case issue_budget_hard_cap do
+      cap when is_integer(cap) and cap > 0 -> cap
+      _ -> Config.max_tokens_per_attempt()
+    end
+  end
+
+  defp hard_cap_for_running_entry(_running_entry), do: Config.max_tokens_per_attempt()
+
+  defp soft_cap_for_running_entry(running_entry) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:triage_budget)
+    |> TriageBudget.soft_cap_tokens()
+  end
+
+  defp soft_cap_for_running_entry(_running_entry), do: nil
+
   defp maybe_park_issue_after_token_cap(%State{} = state, running_entry) when is_map(running_entry) do
     issue = Map.get(running_entry, :issue)
     total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
-    cap = Config.max_tokens_per_attempt()
+    cap = hard_cap_for_running_entry(running_entry)
     identifier = Map.get(running_entry, :identifier, "unknown")
 
     Logger.warning("Token cap exceeded for issue_id=#{Map.get(issue, :id)} issue_identifier=#{identifier}: total_tokens=#{total_tokens} cap=#{inspect(cap)}; stopping active run")

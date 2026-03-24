@@ -48,6 +48,10 @@ defmodule SymphonyElixir.Gitea.Client do
     do: select_controller_candidates(issues, raw_issues)
 
   @doc false
+  @spec csrf_token_from_cookie_for_test(String.t() | nil) :: String.t() | nil
+  def csrf_token_from_cookie_for_test(cookie), do: csrf_token_from_cookie(cookie)
+
+  @doc false
   @spec extract_linked_pull_number_for_test([map()]) :: {:ok, pos_integer()} | {:error, term()}
   def extract_linked_pull_number_for_test(comments), do: extract_linked_pull_number(comments)
 
@@ -367,7 +371,9 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp web_headers(tracker, csrf_required) do
     cookie = normalize_secret_header(tracker.web_cookie)
-    csrf_token = normalize_secret_header(tracker.web_csrf_token)
+    csrf_token =
+      normalize_secret_header(tracker.web_csrf_token) ||
+        csrf_token_from_cookie(cookie)
 
     cond do
       csrf_required and is_nil(cookie) ->
@@ -611,31 +617,28 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp enforce_candidate_guard_remediation(_tracker, _role, _issue, _reason), do: :ok
 
-  defp maybe_create_controller_comment(tracker, issue, reason, next_owner, target_state) do
+  defp maybe_create_controller_comment(_tracker, issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
 
-    if recent_controller_comment_exists?(tracker, issue.id, anomaly_id) do
+    if controller_comment_on_cooldown?(issue.id, anomaly_id) do
       :ok
     else
-      create_comment(issue.id, controller_guard_comment(issue, reason, next_owner, target_state))
+      result = create_comment(issue.id, controller_guard_comment(issue, reason, next_owner, target_state))
+      mark_controller_comment_posted(issue.id, anomaly_id)
+      result
     end
   end
 
-  defp recent_controller_comment_exists?(tracker, issue_id, anomaly_id) do
-    case fetch_issue_comments(tracker, issue_id) do
-      {:ok, comments} when is_list(comments) ->
-        comments
-        |> Enum.reverse()
-        |> Enum.take(10)
-        |> Enum.any?(fn comment ->
-          body = Map.get(comment, "body")
-          is_binary(body) and String.contains?(body, "## Symphony Controller") and
-            String.contains?(body, "anomaly_id: #{anomaly_id}")
-        end)
+  defp controller_comment_on_cooldown?(issue_id, anomaly_id) do
+    key = {__MODULE__, :controller_comment_cooldown, issue_id, anomaly_id}
+    posted_at = :persistent_term.get(key, 0)
+    now = System.monotonic_time(:second)
+    now - posted_at < 300
+  end
 
-      _ ->
-        false
-    end
+  defp mark_controller_comment_posted(issue_id, anomaly_id) do
+    key = {__MODULE__, :controller_comment_cooldown, issue_id, anomaly_id}
+    :persistent_term.put(key, System.monotonic_time(:second))
   end
 
   defp controller_guard_comment(issue, reason, next_owner, target_state) do
@@ -1131,6 +1134,20 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp normalize_secret_header(_value), do: nil
+
+  defp csrf_token_from_cookie(nil), do: nil
+
+  defp csrf_token_from_cookie(cookie) when is_binary(cookie) do
+    cookie
+    |> String.split(";")
+    |> Enum.map(&String.trim/1)
+    |> Enum.find_value(fn pair ->
+      case String.split(pair, "=", parts: 2) do
+        ["_csrf", token] when token != "" -> token
+        _ -> nil
+      end
+    end)
+  end
 
   defp warn_once(key, message_builder) do
     warning_key = {__MODULE__, :warn_once, key}

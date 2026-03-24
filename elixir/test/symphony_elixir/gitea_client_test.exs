@@ -270,4 +270,12 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert comment =~ "#29"
     assert comment =~ "#28"
   end
+
+  test "extracts csrf token from gitea cookie string" do
+    cookie =
+      "lang=en-US;gitea_incredible=abc123;i_like_gitea=deadbeef;_csrf=token-xyz-123"
+
+    assert Client.csrf_token_from_cookie_for_test(cookie) == "token-xyz-123"
+    assert Client.csrf_token_from_cookie_for_test("lang=en-US; i_like_gitea=deadbeef") == nil
+  end
 end

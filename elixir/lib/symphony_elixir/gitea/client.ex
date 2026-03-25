@@ -643,15 +643,34 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp enforce_candidate_guard_remediation(_tracker, _role, _issue, _reason), do: :ok
 
-  defp maybe_create_controller_comment(_tracker, issue, reason, next_owner, target_state) do
+  defp maybe_create_controller_comment(tracker, issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
 
-    if controller_comment_on_cooldown?(issue.id, anomaly_id) do
+    if controller_comment_on_cooldown?(issue.id, anomaly_id) or
+         recent_controller_comment_exists?(tracker, issue.id, anomaly_id) do
       :ok
     else
       result = create_comment(issue.id, controller_guard_comment(issue, reason, next_owner, target_state))
       mark_controller_comment_posted(issue.id, anomaly_id)
       result
+    end
+  end
+
+  defp recent_controller_comment_exists?(tracker, issue_id, anomaly_id) do
+    case fetch_issue_comments(tracker, issue_id) do
+      {:ok, comments} when is_list(comments) ->
+        comments
+        |> Enum.reverse()
+        |> Enum.take(20)
+        |> Enum.any?(fn comment ->
+          body = Map.get(comment, "body")
+
+          is_binary(body) and String.contains?(body, "## Symphony Controller") and
+            String.contains?(body, "anomaly_id: #{anomaly_id}")
+        end)
+
+      _ ->
+        false
     end
   end
 

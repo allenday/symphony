@@ -1201,9 +1201,7 @@ defmodule SymphonyElixir.Gitea.Client do
          %{} = snapshot <- maybe_fetch_project_board_snapshot(tracker),
          {:ok, target_column_id} <- board_column_id(snapshot, target_column_key) do
       if Map.get(snapshot.issue_column_key_by_internal_id, issue_internal_id) == target_column_key do
-        Logger.info(
-          "board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} outcome=already_in_target"
-        )
+        Logger.info("board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} outcome=already_in_target")
 
         :ok
       else
@@ -1225,16 +1223,12 @@ defmodule SymphonyElixir.Gitea.Client do
       end
     else
       {:skip, reason} ->
-        Logger.info(
-          "board_move issue=#{Map.get(issue, "number")} target_state=#{state_name} outcome=skip reason=#{inspect(reason)}"
-        )
+        Logger.info("board_move issue=#{Map.get(issue, "number")} target_state=#{state_name} outcome=skip reason=#{inspect(reason)}")
 
         :ok
 
       nil ->
-        Logger.info(
-          "board_move issue=#{Map.get(issue, "number")} target_state=#{state_name} outcome=skip reason=no_board_snapshot"
-        )
+        Logger.info("board_move issue=#{Map.get(issue, "number")} target_state=#{state_name} outcome=skip reason=no_board_snapshot")
 
         :ok
 

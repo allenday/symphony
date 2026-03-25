@@ -474,6 +474,7 @@ defmodule SymphonyElixir.Gitea.Client do
   defp candidate_guard_result(tracker, role, %Issue{} = issue, raw_by_issue_number, board_snapshot) do
     with :ok <- project_membership_guard_result(issue, raw_by_issue_number, board_snapshot),
          :ok <- triage_ready_guard_result(tracker, role, issue),
+         :ok <- backlog_open_pr_guard_result(tracker, role, issue),
          :ok <- review_handoff_guard_result(tracker, role, issue) do
       :ok
     else
@@ -518,6 +519,25 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp triage_ready_guard_result(_tracker, _role, _issue), do: :ok
+
+  defp backlog_open_pr_guard_result(tracker, "controller", %Issue{} = issue) do
+    if state_match_key(issue.state) == "backlog" do
+      with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
+           {:ok, pr_number} <- extract_linked_pull_number(comments),
+           {:ok, pull} <- fetch_pull_request(tracker, pr_number),
+           true <- normalize_state(Map.get(pull, "state")) == "open" do
+        {:error, {:backlog_with_open_pr, pr_number}}
+      else
+        {:error, {:missing_linked_pull, _issue_id}} -> :ok
+        false -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp backlog_open_pr_guard_result(_tracker, _role, _issue), do: :ok
 
   defp review_handoff_guard_result(_tracker, role, %Issue{} = _issue)
        when role not in ["reviewer", "controller"],
@@ -656,6 +676,13 @@ defmodule SymphonyElixir.Gitea.Client do
         _ = close_pull_request(tracker, pr_number)
         :ok
 
+      {:backlog_with_open_pr, pr_number} ->
+        maybe_create_controller_comment(tracker, issue, reason, "reviewer", "Done")
+        _ = set_issue_assignee(tracker, issue.id, "reviewer")
+        _ = update_issue_state(issue.id, "Done")
+        _ = request_pull_reviewer(tracker, pr_number, "reviewer")
+        :ok
+
       _ ->
         maybe_create_controller_comment(tracker, issue, reason, builder_assignee, "To Do")
         _ = set_issue_assignee(tracker, issue.id, builder_assignee)
@@ -742,6 +769,7 @@ defmodule SymphonyElixir.Gitea.Client do
   defp controller_anomaly_id({:dependency_blocked, _deps}), do: "A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE"
   defp controller_anomaly_id(:missing_project_membership), do: "A09_PROJECT_MEMBERSHIP_MISSING"
   defp controller_anomaly_id({:stale_open_pr_already_in_base, _}), do: "A10_STALE_OPEN_PR_ALREADY_IN_BASE"
+  defp controller_anomaly_id({:backlog_with_open_pr, _}), do: "A11_BACKLOG_WITH_OPEN_PR"
 
   defp controller_anomaly_id(_reason), do: "A00_UNKNOWN_CONTROLLER_GUARD"
 
@@ -772,6 +800,9 @@ defmodule SymphonyElixir.Gitea.Client do
   defp humanize_review_guard_reason({:stale_open_pr_already_in_base, pr_number}),
     do: "PR ##{pr_number} is still open but has no diff versus base (already in target branch)."
 
+  defp humanize_review_guard_reason({:backlog_with_open_pr, pr_number}),
+    do: "Issue is still in Backlog but linked PR ##{pr_number} is already open."
+
   defp humanize_review_guard_reason(other), do: inspect(other)
 
   defp controller_expected_recovery({:missing_linked_pull, _issue_id}),
@@ -801,11 +832,17 @@ defmodule SymphonyElixir.Gitea.Client do
   defp controller_expected_recovery({:stale_open_pr_already_in_base, _}),
     do: "close stale PR; keep parent issue open for normal state-machine handling"
 
+  defp controller_expected_recovery({:backlog_with_open_pr, _}),
+    do: "promote issue to Done and hand off PR to reviewer queue"
+
   defp controller_expected_recovery(_reason),
     do: "inspect controller logs and resolve prerequisites before retrying handoff"
 
   defp controller_actions_taken({:stale_open_pr_already_in_base, pr_number}, _next_owner, _target_state),
     do: "comment, close_pr:#{pr_number}"
+
+  defp controller_actions_taken({:backlog_with_open_pr, pr_number}, _next_owner, _target_state),
+    do: "comment, assign:reviewer, state:Done, request_reviewer:reviewer, pr:#{pr_number}"
 
   defp controller_actions_taken(_reason, next_owner, target_state),
     do: "comment, assign:#{next_owner}, state:#{target_state}"
@@ -869,6 +906,21 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp close_pull_request(_tracker, _pull_number), do: {:error, :invalid_pull_number}
+
+  defp request_pull_reviewer(tracker, pull_number, reviewer)
+       when is_integer(pull_number) and pull_number > 0 and is_binary(reviewer) do
+    case request(
+           tracker,
+           :post,
+           "/repos/#{tracker.owner}/#{tracker.repo}/pulls/#{pull_number}/requested_reviewers",
+           %{reviewers: [reviewer]}
+         ) do
+      {:ok, _response} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp request_pull_reviewer(_tracker, _pull_number, _reviewer), do: {:error, :invalid_reviewer_request}
 
   defp requested_reviewer_present?(pull, expected_login) when is_map(pull) and is_binary(expected_login) do
     reviewers =

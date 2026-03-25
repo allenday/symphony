@@ -251,10 +251,13 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp fetch_issue_comments(tracker, issue_id) do
-    do_fetch_issue_comments(tracker, issue_id, 1, [])
+    do_fetch_issue_comments(tracker, issue_id, 1, [], comment_page_limit())
   end
 
-  defp do_fetch_issue_comments(tracker, issue_id, page, acc) do
+  defp do_fetch_issue_comments(_tracker, _issue_id, page, acc, max_pages) when page > max_pages,
+    do: {:ok, acc}
+
+  defp do_fetch_issue_comments(tracker, issue_id, page, acc, max_pages) do
     path =
       "/repos/#{tracker.owner}/#{tracker.repo}/issues/#{issue_index(issue_id)}/comments?page=#{page}&limit=#{@page_size}"
 
@@ -262,10 +265,10 @@ defmodule SymphonyElixir.Gitea.Client do
       {:ok, comments} when is_list(comments) ->
         updated = acc ++ comments
 
-        if length(comments) < @page_size do
+        if length(comments) < @page_size or page >= max_pages do
           {:ok, updated}
         else
-          do_fetch_issue_comments(tracker, issue_id, page + 1, updated)
+          do_fetch_issue_comments(tracker, issue_id, page + 1, updated, max_pages)
         end
 
       {:ok, _other} ->
@@ -1157,6 +1160,22 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp normalize_secret_header(_value), do: nil
+
+  defp comment_page_limit do
+    case System.get_env("GITEA_COMMENT_PAGE_LIMIT") do
+      nil ->
+        3
+
+      value when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {parsed, ""} when parsed >= 1 and parsed <= 20 -> parsed
+          _ -> 3
+        end
+
+      _ ->
+        3
+    end
+  end
 
   defp csrf_token_from_cookie(nil), do: nil
 

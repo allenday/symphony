@@ -271,6 +271,22 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert comment =~ "#28"
   end
 
+  test "controller remediation comment includes stale-pr anomaly id" do
+    issue = %Issue{id: "30", identifier: "symphony#30"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:stale_open_pr_already_in_base, 57},
+        "reviewer",
+        "Closed"
+      )
+
+    assert comment =~ "anomaly_id: A10_STALE_OPEN_PR_ALREADY_IN_BASE"
+    assert comment =~ "close_pr:57"
+    refute comment =~ "close_issue"
+  end
+
   test "extracts csrf token from gitea cookie string" do
     cookie =
       "lang=en-US;gitea_incredible=abc123;i_like_gitea=deadbeef;_csrf=token-xyz-123"

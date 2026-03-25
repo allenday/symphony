@@ -59,8 +59,11 @@ docker compose up --build
 Dual-role services:
 
 ```bash
+cp .env.shared.example .env.shared
 cp .env.builder.example .env.builder
 cp .env.reviewer.example .env.reviewer
+cp .env.triage.example .env.triage
+cp .env.controller.example .env.controller
 docker compose -f docker-compose.roles.yml up --build
 ```
 
@@ -77,7 +80,7 @@ Notes:
 - Worker workspaces clone from `SYMPHONY_REPO_URL` on `SYMPHONY_REPO_BRANCH`.
 - Project board columns should be: `Backlog`, `To Do`, `In Progress`, `Done`.
 - The compose stack persists workspaces and logs via named volumes.
-- For board-sync/moves, set `GITEA_WEB_COOKIE` and `GITEA_WEB_CSRF_TOKEN` from a logged-in Gitea session.
+- For board-sync/moves, set `GITEA_WEB_COOKIE` once in `.env.shared` from a logged-in Gitea session.
 - Startup validates `GITEA_PROJECT_ID` against the repo issues page by default (`GITEA_VALIDATE_PROJECT_ID=1`).
   - Set `GITEA_VALIDATE_PROJECT_ID=0` only as an emergency bypass.
 - Reviewer watchdog fallback is enabled by default (`GITEA_REVIEWER_WATCHDOG=1`): reviewer can pick

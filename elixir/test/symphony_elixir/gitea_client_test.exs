@@ -287,6 +287,23 @@ defmodule SymphonyElixir.GiteaClientTest do
     refute comment =~ "close_issue"
   end
 
+  test "controller remediation comment includes backlog-open-pr anomaly id" do
+    issue = %Issue{id: "29", identifier: "symphony#29"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:backlog_with_open_pr, 59},
+        "reviewer",
+        "Done"
+      )
+
+    assert comment =~ "anomaly_id: A11_BACKLOG_WITH_OPEN_PR"
+    assert comment =~ "request_reviewer:reviewer"
+    assert comment =~ "pr:59"
+    assert comment =~ "state:Done"
+  end
+
   test "extracts csrf token from gitea cookie string" do
     cookie =
       "lang=en-US;gitea_incredible=abc123;i_like_gitea=deadbeef;_csrf=token-xyz-123"

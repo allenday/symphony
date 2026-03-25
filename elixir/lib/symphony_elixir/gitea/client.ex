@@ -517,13 +517,35 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp review_handoff_guard_result(_tracker, role, %Issue{} = _issue)
        when role not in ["reviewer", "controller"],
-    do: :ok
+       do: :ok
 
   defp review_handoff_guard_result(_tracker, _role, %Issue{} = issue)
        when not is_binary(issue.state),
        do: :ok
 
-  defp review_handoff_guard_result(tracker, _role, %Issue{} = issue) do
+  # Reviewer policy: linked PR handoff should be evaluated even when issue
+  # dependencies are open. Dependency closure is a controller/planner concern.
+  defp review_handoff_guard_result(tracker, "reviewer", %Issue{} = issue) do
+    if state_match_key(issue.state) == "done" do
+      with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
+           {:ok, pr_number} <- extract_linked_pull_number(comments),
+           {:ok, pull} <- fetch_pull_request(tracker, pr_number),
+           :ok <- requested_reviewer_present?(pull, "reviewer"),
+           {:ok, head_sha} <- pull_head_sha(pull),
+           {:ok, statuses} <- fetch_commit_statuses(tracker, head_sha),
+           :ok <- required_pr_ci_success?(statuses) do
+        :ok
+      else
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  # Controller policy: keep dependency gating so system-level anomaly handling
+  # can nudge blocked issue graphs without stalling reviewer dispatch.
+  defp review_handoff_guard_result(tracker, "controller", %Issue{} = issue) do
     if state_match_key(issue.state) == "done" do
       with :ok <- dependency_block_guard_result(tracker, issue),
            {:ok, comments} <- fetch_issue_comments(tracker, issue.id),

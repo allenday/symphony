@@ -371,6 +371,7 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp web_headers(tracker, csrf_required) do
     cookie = normalize_secret_header(tracker.web_cookie)
+
     csrf_token =
       normalize_secret_header(tracker.web_csrf_token) ||
         csrf_token_from_cookie(cookie)

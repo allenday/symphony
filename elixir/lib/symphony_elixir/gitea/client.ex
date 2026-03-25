@@ -643,55 +643,142 @@ defmodule SymphonyElixir.Gitea.Client do
 
     case reason do
       :missing_triage_budget ->
-        _ = create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
-        _ = set_issue_assignee(tracker, issue.id, planner_assignee)
-        _ = update_issue_state(issue.id, "Backlog")
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :assign_planner, fn ->
+          set_issue_assignee(tracker, issue.id, planner_assignee)
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :state_backlog, fn ->
+          update_issue_state(issue.id, "Backlog")
+        end)
+
         :ok
 
       :triage_not_ready ->
-        _ = create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
-        _ = set_issue_assignee(tracker, issue.id, planner_assignee)
-        _ = update_issue_state(issue.id, "Backlog")
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          create_comment(issue.id, controller_guard_comment(issue, reason, planner_assignee, "Backlog"))
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :assign_planner, fn ->
+          set_issue_assignee(tracker, issue.id, planner_assignee)
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :state_backlog, fn ->
+          update_issue_state(issue.id, "Backlog")
+        end)
+
         :ok
 
       :missing_project_membership ->
-        maybe_create_controller_comment(tracker, issue, reason, planner_assignee, "Backlog")
-        _ = set_issue_assignee(tracker, issue.id, planner_assignee)
-        _ = update_issue_state(issue.id, "Backlog")
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          maybe_create_controller_comment(tracker, issue, reason, planner_assignee, "Backlog")
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :assign_planner, fn ->
+          set_issue_assignee(tracker, issue.id, planner_assignee)
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :state_backlog, fn ->
+          update_issue_state(issue.id, "Backlog")
+        end)
+
         :ok
 
       {:dependency_blocked, _deps} ->
-        maybe_create_controller_comment(
-          tracker,
-          issue,
-          reason,
-          normalize_assignee(issue.assignee_id) || "reviewer",
-          "Done"
-        )
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          maybe_create_controller_comment(
+            tracker,
+            issue,
+            reason,
+            normalize_assignee(issue.assignee_id) || "reviewer",
+            "Done"
+          )
+        end)
 
         :ok
 
       {:stale_open_pr_already_in_base, pr_number} ->
-        maybe_create_controller_comment(tracker, issue, reason, "reviewer", "Closed")
-        _ = close_pull_request(tracker, pr_number)
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          maybe_create_controller_comment(tracker, issue, reason, "reviewer", "Closed")
+        end)
+
+        run_controller_remediation_action(role, issue, reason, {:close_pr, pr_number}, fn ->
+          close_pull_request(tracker, pr_number)
+        end)
+
         :ok
 
       {:backlog_with_open_pr, pr_number} ->
-        maybe_create_controller_comment(tracker, issue, reason, "reviewer", "Done")
-        _ = set_issue_assignee(tracker, issue.id, "reviewer")
-        _ = update_issue_state(issue.id, "Done")
-        _ = request_pull_reviewer(tracker, pr_number, "reviewer")
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          maybe_create_controller_comment(tracker, issue, reason, "reviewer", "Done")
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :assign_reviewer, fn ->
+          set_issue_assignee(tracker, issue.id, "reviewer")
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :state_done, fn ->
+          update_issue_state(issue.id, "Done")
+        end)
+
+        run_controller_remediation_action(role, issue, reason, {:request_reviewer, pr_number}, fn ->
+          request_pull_reviewer(tracker, pr_number, "reviewer")
+        end)
+
         :ok
 
       _ ->
-        maybe_create_controller_comment(tracker, issue, reason, builder_assignee, "To Do")
-        _ = set_issue_assignee(tracker, issue.id, builder_assignee)
-        _ = update_issue_state(issue.id, "To Do")
+        run_controller_remediation_action(role, issue, reason, :comment, fn ->
+          maybe_create_controller_comment(tracker, issue, reason, builder_assignee, "To Do")
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :assign_builder, fn ->
+          set_issue_assignee(tracker, issue.id, builder_assignee)
+        end)
+
+        run_controller_remediation_action(role, issue, reason, :state_todo, fn ->
+          update_issue_state(issue.id, "To Do")
+        end)
+
         :ok
     end
   end
 
   defp enforce_candidate_guard_remediation(_tracker, _role, _issue, _reason), do: :ok
+
+  defp run_controller_remediation_action(role, issue, reason, action, fun)
+       when is_function(fun, 0) do
+    result =
+      try do
+        fun.()
+      rescue
+        exception -> {:error, {:exception, Exception.message(exception)}}
+      end
+
+    anomaly_id = controller_anomaly_id(reason)
+    issue_identifier = issue.identifier || issue.id || "unknown"
+    normalized_result = remediation_result_status(result)
+
+    Logger.info(
+      "controller_remediation role=#{role} issue=#{issue_identifier} anomaly_id=#{anomaly_id} action=#{remediation_action_name(action)} result=#{normalized_result} detail=#{inspect(result)}"
+    )
+
+    result
+  end
+
+  defp remediation_result_status(:ok), do: "ok"
+  defp remediation_result_status({:ok, _}), do: "ok"
+  defp remediation_result_status({:skip, _}), do: "skip"
+  defp remediation_result_status({:error, _}), do: "error"
+  defp remediation_result_status(_other), do: "unknown"
+
+  defp remediation_action_name({:close_pr, number}), do: "close_pr:#{number}"
+  defp remediation_action_name({:request_reviewer, number}), do: "request_reviewer:#{number}"
+  defp remediation_action_name(action) when is_atom(action), do: Atom.to_string(action)
+  defp remediation_action_name(action), do: to_string(action)
 
   defp maybe_create_controller_comment(tracker, issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
@@ -1114,15 +1201,35 @@ defmodule SymphonyElixir.Gitea.Client do
          %{} = snapshot <- maybe_fetch_project_board_snapshot(tracker),
          {:ok, target_column_id} <- board_column_id(snapshot, target_column_key) do
       if Map.get(snapshot.issue_column_key_by_internal_id, issue_internal_id) == target_column_key do
+        Logger.info("board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} outcome=already_in_target")
+
         :ok
       else
-        move_issue_on_board(tracker, issue_internal_id, target_column_id)
+        case move_issue_on_board(tracker, issue_internal_id, target_column_id) do
+          :ok ->
+            Logger.info(
+              "board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} target_column_id=#{target_column_id} outcome=moved"
+            )
+
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} target_column_id=#{target_column_id} outcome=error reason=#{inspect(reason)}"
+            )
+
+            {:error, reason}
+        end
       end
     else
-      {:skip, _reason} ->
+      {:skip, reason} ->
+        Logger.info("board_move issue=#{Map.get(issue, "number")} target_state=#{state_name} outcome=skip reason=#{inspect(reason)}")
+
         :ok
 
       nil ->
+        Logger.info("board_move issue=#{Map.get(issue, "number")} target_state=#{state_name} outcome=skip reason=no_board_snapshot")
+
         :ok
 
       {:error, :missing_gitea_web_cookie} ->

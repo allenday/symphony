@@ -534,6 +534,7 @@ defmodule SymphonyElixir.Gitea.Client do
       with {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
            {:ok, pr_number} <- extract_linked_pull_number(comments),
            {:ok, pull} <- fetch_pull_request(tracker, pr_number),
+           :ok <- stale_open_pr_guard_result(pull),
            :ok <- requested_reviewer_present?(pull, "reviewer"),
            {:ok, head_sha} <- pull_head_sha(pull),
            {:ok, statuses} <- fetch_commit_statuses(tracker, head_sha),
@@ -555,6 +556,7 @@ defmodule SymphonyElixir.Gitea.Client do
            {:ok, comments} <- fetch_issue_comments(tracker, issue.id),
            {:ok, pr_number} <- extract_linked_pull_number(comments),
            {:ok, pull} <- fetch_pull_request(tracker, pr_number),
+           :ok <- stale_open_pr_guard_result(pull),
            :ok <- requested_reviewer_present?(pull, "reviewer"),
            {:ok, head_sha} <- pull_head_sha(pull),
            {:ok, statuses} <- fetch_commit_statuses(tracker, head_sha),
@@ -569,6 +571,22 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp review_handoff_guard_result(_tracker, _role, _issue), do: :ok
+
+  defp stale_open_pr_guard_result(pull) when is_map(pull) do
+    state = pull |> Map.get("state") |> normalize_state()
+    changed_files = Map.get(pull, "changed_files")
+    additions = Map.get(pull, "additions")
+    deletions = Map.get(pull, "deletions")
+    number = Map.get(pull, "number")
+
+    if state == "open" and changed_files == 0 and additions == 0 and deletions == 0 do
+      {:error, {:stale_open_pr_already_in_base, number}}
+    else
+      :ok
+    end
+  end
+
+  defp stale_open_pr_guard_result(_pull), do: :ok
 
   defp dependency_block_guard_result(tracker, %Issue{} = issue) do
     case fetch_issue_dependencies(tracker, issue.id) do
@@ -633,6 +651,11 @@ defmodule SymphonyElixir.Gitea.Client do
 
         :ok
 
+      {:stale_open_pr_already_in_base, pr_number} ->
+        maybe_create_controller_comment(tracker, issue, reason, "reviewer", "Closed")
+        _ = close_pull_request(tracker, pr_number)
+        :ok
+
       _ ->
         maybe_create_controller_comment(tracker, issue, reason, builder_assignee, "To Do")
         _ = set_issue_assignee(tracker, issue.id, builder_assignee)
@@ -643,15 +666,34 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp enforce_candidate_guard_remediation(_tracker, _role, _issue, _reason), do: :ok
 
-  defp maybe_create_controller_comment(_tracker, issue, reason, next_owner, target_state) do
+  defp maybe_create_controller_comment(tracker, issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
 
-    if controller_comment_on_cooldown?(issue.id, anomaly_id) do
+    if controller_comment_on_cooldown?(issue.id, anomaly_id) or
+         recent_controller_comment_exists?(tracker, issue.id, anomaly_id) do
       :ok
     else
       result = create_comment(issue.id, controller_guard_comment(issue, reason, next_owner, target_state))
       mark_controller_comment_posted(issue.id, anomaly_id)
       result
+    end
+  end
+
+  defp recent_controller_comment_exists?(tracker, issue_id, anomaly_id) do
+    case fetch_issue_comments(tracker, issue_id) do
+      {:ok, comments} when is_list(comments) ->
+        comments
+        |> Enum.reverse()
+        |> Enum.take(20)
+        |> Enum.any?(fn comment ->
+          body = Map.get(comment, "body")
+
+          is_binary(body) and String.contains?(body, "## Symphony Controller") and
+            String.contains?(body, "anomaly_id: #{anomaly_id}")
+        end)
+
+      _ ->
+        false
     end
   end
 
@@ -677,7 +719,7 @@ defmodule SymphonyElixir.Gitea.Client do
     detected_at: #{detected_at}
     issue_identifier: #{issue.identifier || issue.id}
     reason: #{humanize_review_guard_reason(reason)}
-    actions_taken: comment, assign:#{next_owner}, state:#{target_state}
+    actions_taken: #{controller_actions_taken(reason, next_owner, target_state)}
     next_owner: #{next_owner}
     expected_recovery: #{controller_expected_recovery(reason)}
     """
@@ -699,6 +741,7 @@ defmodule SymphonyElixir.Gitea.Client do
   defp controller_anomaly_id(:triage_not_ready), do: "A02_TRIAGE_NOT_READY_PROMOTED"
   defp controller_anomaly_id({:dependency_blocked, _deps}), do: "A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE"
   defp controller_anomaly_id(:missing_project_membership), do: "A09_PROJECT_MEMBERSHIP_MISSING"
+  defp controller_anomaly_id({:stale_open_pr_already_in_base, _}), do: "A10_STALE_OPEN_PR_ALREADY_IN_BASE"
 
   defp controller_anomaly_id(_reason), do: "A00_UNKNOWN_CONTROLLER_GUARD"
 
@@ -726,6 +769,9 @@ defmodule SymphonyElixir.Gitea.Client do
   defp humanize_review_guard_reason(:missing_project_membership),
     do: "Issue is not present on the configured project board."
 
+  defp humanize_review_guard_reason({:stale_open_pr_already_in_base, pr_number}),
+    do: "PR ##{pr_number} is still open but has no diff versus base (already in target branch)."
+
   defp humanize_review_guard_reason(other), do: inspect(other)
 
   defp controller_expected_recovery({:missing_linked_pull, _issue_id}),
@@ -752,8 +798,17 @@ defmodule SymphonyElixir.Gitea.Client do
   defp controller_expected_recovery(:missing_project_membership),
     do: "add the issue to the configured project board and place it in the intended column"
 
+  defp controller_expected_recovery({:stale_open_pr_already_in_base, _}),
+    do: "close stale PR; keep parent issue open for normal state-machine handling"
+
   defp controller_expected_recovery(_reason),
     do: "inspect controller logs and resolve prerequisites before retrying handoff"
+
+  defp controller_actions_taken({:stale_open_pr_already_in_base, pr_number}, _next_owner, _target_state),
+    do: "comment, close_pr:#{pr_number}"
+
+  defp controller_actions_taken(_reason, next_owner, target_state),
+    do: "comment, assign:#{next_owner}, state:#{target_state}"
 
   defp extract_linked_pull_number(comments) when is_list(comments) do
     comments
@@ -799,6 +854,21 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp fetch_pull_request(_tracker, _pull_number), do: {:error, :invalid_pull_number}
+
+  defp close_pull_request(tracker, pull_number)
+       when is_integer(pull_number) and pull_number > 0 do
+    case request(
+           tracker,
+           :patch,
+           "/repos/#{tracker.owner}/#{tracker.repo}/pulls/#{pull_number}",
+           %{state: "closed"}
+         ) do
+      {:ok, _response} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp close_pull_request(_tracker, _pull_number), do: {:error, :invalid_pull_number}
 
   defp requested_reviewer_present?(pull, expected_login) when is_map(pull) and is_binary(expected_login) do
     reviewers =

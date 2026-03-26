@@ -681,6 +681,10 @@ defmodule SymphonyElixir.Gitea.Client do
           set_issue_assignee(tracker, issue.id, planner_assignee)
         end)
 
+        run_controller_remediation_action(role, issue, reason, :add_to_project, fn ->
+          add_issue_to_project_board(tracker, issue.id)
+        end)
+
         run_controller_remediation_action(role, issue, reason, :state_backlog, fn ->
           update_issue_state(issue.id, "Backlog")
         end)
@@ -993,6 +997,26 @@ defmodule SymphonyElixir.Gitea.Client do
   end
 
   defp close_pull_request(_tracker, _pull_number), do: {:error, :invalid_pull_number}
+
+  defp add_issue_to_project_board(%{project_id: nil}, _issue_id), do: {:skip, :missing_project_id}
+
+  defp add_issue_to_project_board(tracker, issue_id) when is_binary(issue_id) do
+    with {:ok, issue} <- fetch_issue(tracker, issue_id),
+         {:ok, issue_internal_id} <- parse_issue_internal_id(issue) do
+      payload = %{"id" => tracker.project_id, "issue_ids" => [issue_internal_id]}
+      path = "/#{tracker.owner}/#{tracker.repo}/issues/projects"
+
+      case web_request(tracker, :post, path, payload, csrf_required: true) do
+        {:ok, _response} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:skip, reason} -> {:skip, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp add_issue_to_project_board(_tracker, _issue_id), do: {:error, :invalid_issue_id}
 
   defp request_pull_reviewer(tracker, pull_number, reviewer)
        when is_integer(pull_number) and pull_number > 0 and is_binary(reviewer) do

@@ -143,6 +143,24 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert Enum.map(selected, & &1.id) == ["1", "2"]
   end
 
+  test "controller candidate selection is assignee agnostic and excludes pull requests" do
+    issues = [
+      %Issue{id: "1", state: "Backlog", assignee_id: nil},
+      %Issue{id: "2", state: "Done", assignee_id: "reviewer"},
+      %Issue{id: "3", state: "To Do", assignee_id: "builder"}
+    ]
+
+    raw_issues = [
+      %{"number" => 1},
+      %{"number" => 2, "pull_request" => %{"url" => "https://example.test/pulls/2"}},
+      %{"number" => 3}
+    ]
+
+    selected = Client.select_controller_candidates_for_test(issues, raw_issues)
+
+    assert Enum.map(selected, & &1.id) == ["1", "3"]
+  end
+
   test "parses project board HTML into column and issue mappings" do
     html = """
     <div id="project-board">
@@ -173,5 +191,124 @@ defmodule SymphonyElixir.GiteaClientTest do
     assert Client.board_column_key_for_test("Backlog2") == "backlog"
     assert Client.board_column_key_for_test("In Progress") == "inprogress"
     assert Client.board_column_key_for_test("Human-Review") == "humanreview"
+  end
+
+  test "extracts linked pull number from latest issue comments" do
+    comments = [
+      %{"body" => "PR: https://gitea.example.test/org/repo/pulls/11"},
+      %{"body" => "latest link https://gitea.example.test/org/repo/pulls/57"}
+    ]
+
+    assert {:ok, 57} = Client.extract_linked_pull_number_for_test(comments)
+  end
+
+  test "requested reviewer validation detects missing reviewer handoff" do
+    pull = %{
+      "number" => 57,
+      "requested_reviewers" => [%{"login" => "alice"}, %{"login" => "bob"}]
+    }
+
+    assert {:error, {:missing_requested_reviewer, 57}} =
+             Client.requested_reviewer_present_for_test(pull, "reviewer")
+  end
+
+  test "required pr ci validation demands success for woodpecker pr context" do
+    statuses = [
+      %{"context" => "ci/woodpecker/pr/woodpecker", "status" => "failure"}
+    ]
+
+    assert {:error, {:pr_ci_not_success, "ci/woodpecker/pr/woodpecker", "failure"}} =
+             Client.required_pr_ci_success_for_test(statuses)
+  end
+
+  test "controller remediation comment uses typed schema with anomaly id" do
+    issue = %Issue{id: "30", identifier: "symphony#30"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:missing_requested_reviewer, 57},
+        "builder",
+        "To Do"
+      )
+
+    assert comment =~ "## Symphony Controller"
+    assert comment =~ "anomaly_id: A04_REVIEW_HANDOFF_MISSING_REVIEWER_REQUEST"
+    assert comment =~ "issue_identifier: symphony#30"
+    assert comment =~ "next_owner: builder"
+    assert comment =~ "actions_taken: comment, assign:builder, state:To Do"
+  end
+
+  test "controller remediation comment includes triage anomaly id" do
+    issue = %Issue{id: "29", identifier: "symphony#29"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        :missing_triage_budget,
+        "planner",
+        "Backlog"
+      )
+
+    assert comment =~ "anomaly_id: A01_TRIAGE_MISSING_BUDGET"
+    assert comment =~ "next_owner: planner"
+    assert comment =~ "state:Backlog"
+  end
+
+  test "controller remediation comment includes dependency-block anomaly id" do
+    issue = %Issue{id: "30", identifier: "symphony#30"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:dependency_blocked, [29, 28]},
+        "reviewer",
+        "Done"
+      )
+
+    assert comment =~ "anomaly_id: A08_REVIEW_ACCEPTED_BUT_NOT_CLOSABLE"
+    assert comment =~ "#29"
+    assert comment =~ "#28"
+  end
+
+  test "controller remediation comment includes stale-pr anomaly id" do
+    issue = %Issue{id: "30", identifier: "symphony#30"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:stale_open_pr_already_in_base, 57},
+        "reviewer",
+        "Closed"
+      )
+
+    assert comment =~ "anomaly_id: A10_STALE_OPEN_PR_ALREADY_IN_BASE"
+    assert comment =~ "close_pr:57"
+    refute comment =~ "close_issue"
+  end
+
+  test "controller remediation comment includes backlog-open-pr anomaly id" do
+    issue = %Issue{id: "29", identifier: "symphony#29"}
+
+    comment =
+      Client.controller_guard_comment_for_test(
+        issue,
+        {:backlog_with_open_pr, 59},
+        "reviewer",
+        "Done"
+      )
+
+    assert comment =~ "anomaly_id: A11_BACKLOG_WITH_OPEN_PR"
+    assert comment =~ "request_reviewer:reviewer"
+    assert comment =~ "pr:59"
+    assert comment =~ "state:Done"
+  end
+
+  test "extracts csrf token from gitea cookie string" do
+    cookie =
+      "lang=en-US;gitea_incredible=abc123;i_like_gitea=deadbeef;_csrf=token-xyz-123"
+
+    assert Client.csrf_token_from_cookie_for_test(cookie) == "token-xyz-123"
+    assert Client.csrf_token_from_cookie_for_test("lang=en-US; i_like_gitea=deadbeef") == nil
   end
 end

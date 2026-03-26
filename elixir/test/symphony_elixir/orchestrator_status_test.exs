@@ -412,9 +412,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     initial_state = :sys.get_state(pid)
     started_at = DateTime.utc_now()
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
 
     running_entry = %{
-      pid: self(),
+      pid: worker_pid,
       ref: make_ref(),
       identifier: issue.identifier,
       issue: issue,

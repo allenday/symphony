@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: elixir/docker/Dockerfile
     env_file:
+      - .env.shared
       - .env.builder
     environment:
       SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.builder.md
@@ -19,6 +20,7 @@ services:
       context: .
       dockerfile: elixir/docker/Dockerfile
     env_file:
+      - .env.shared
       - .env.reviewer
     environment:
       SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.reviewer.md
@@ -27,8 +29,40 @@ services:
       - symphony-reviewer-workspaces:/workspaces
       - symphony-reviewer-logs:/var/log/symphony
 
+  symphony-triage:
+    build:
+      context: .
+      dockerfile: elixir/docker/Dockerfile
+    env_file:
+      - .env.shared
+      - .env.triage
+    environment:
+      SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.triage.md
+    volumes:
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+      - symphony-triage-workspaces:/workspaces
+      - symphony-triage-logs:/var/log/symphony
+
+  symphony-controller:
+    build:
+      context: .
+      dockerfile: elixir/docker/Dockerfile
+    env_file:
+      - .env.shared
+      - .env.controller
+    environment:
+      SYMPHONY_WORKFLOW_FILE: /opt/symphony/elixir/WORKFLOW.docker.gitea.controller.md
+    volumes:
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+      - symphony-controller-workspaces:/workspaces
+      - symphony-controller-logs:/var/log/symphony
+
 volumes:
   symphony-builder-workspaces:
   symphony-builder-logs:
   symphony-reviewer-workspaces:
   symphony-reviewer-logs:
+  symphony-triage-workspaces:
+  symphony-triage-logs:
+  symphony-controller-workspaces:
+  symphony-controller-logs:

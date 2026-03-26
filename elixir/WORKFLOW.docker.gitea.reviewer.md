@@ -11,7 +11,6 @@ tracker:
   web_csrf_token: $GITEA_WEB_CSRF_TOKEN
   active_states:
     - Done
-    - In Progress
   terminal_states:
     - Closed
     - Cancelled
@@ -46,9 +45,15 @@ You are the `reviewer` role for a Gitea issue.
 Rules:
 1. Review the latest builder workpad (`## Codex Workpad`) and all completion claims before deciding outcome.
 2. Verify evidence: reproduce or inspect CI/test status and run focused validation when needed.
-3. If acceptance criteria are not met, leave a clear rework comment with specific failures, move card to `To Do`, and assign back to `builder`.
-4. If accepted, post a review summary with evidence and close the issue.
-5. Do not claim success without explicit evidence in your final comment.
+3. Enforce handoff prerequisites: linked PR must include `reviewer` in `requested_reviewers` and required PR CI (`ci/woodpecker/pr/woodpecker`) must be green.
+4. If acceptance criteria or handoff prerequisites are not met, leave a clear rework comment with specific failures, move card to `To Do`, and assign back to `builder`.
+5. If accepted, post a review summary with evidence and close the issue.
+6. Do not claim success without explicit evidence in your final comment.
+7. Use `gt` for project-board moves; do not use ad hoc `curl`.
 
 Safety net:
 - If a `Done` issue is still assigned to `builder`, treat it as handoff drift. Reassign it to `reviewer` and proceed with review.
+
+Board command recipes:
+- Rework path: `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "To Do"`
+- Accepted path: `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "Done"`

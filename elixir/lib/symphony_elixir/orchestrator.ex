@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, TriageBudget, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -190,6 +190,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        updated_running_entry = maybe_emit_soft_cap_warning(updated_running_entry)
 
         state =
           state
@@ -346,6 +347,12 @@ defmodule SymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host)
   end
 
+  @doc false
+  @spec should_move_issue_to_in_progress_for_test(String.t()) :: boolean()
+  def should_move_issue_to_in_progress_for_test(state_name) when is_binary(state_name) do
+    should_move_issue_to_in_progress?(state_name)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -483,8 +490,10 @@ defmodule SymphonyElixir.Orchestrator do
     if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
+      issue = Map.get(running_entry, :issue)
 
       Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
+      maybe_comment_stalled_anomaly(issue, identifier, elapsed_ms, timeout_ms)
 
       next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -744,6 +753,8 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
+            triage_budget: TriageBudget.from_issue(issue),
+            soft_cap_notified: false,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
           })
@@ -768,9 +779,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_move_to_in_progress(%Issue{} = issue) do
-    normalized = normalize_issue_state(issue.state)
-
-    if normalized != "in progress" do
+    if should_move_issue_to_in_progress?(issue.state) do
       case Tracker.update_issue_state(issue.id, "In Progress") do
         :ok ->
           Logger.info("Moved issue to In Progress: #{issue_context(issue)}")
@@ -779,6 +788,10 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.warning("Failed to move issue to In Progress: #{issue_context(issue)} reason=#{inspect(reason)}")
       end
     end
+  end
+
+  defp should_move_issue_to_in_progress?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) in ["todo", "to do"]
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -1695,7 +1708,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_seconds(_started_at, _now), do: 0
 
   defp token_cap_exceeded?(running_entry) when is_map(running_entry) do
-    case Config.max_tokens_per_attempt() do
+    case hard_cap_for_running_entry(running_entry) do
       cap when is_integer(cap) and cap > 0 ->
         Map.get(running_entry, :codex_total_tokens, 0) > cap
 
@@ -1706,10 +1719,65 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp token_cap_exceeded?(_running_entry), do: false
 
+  defp maybe_emit_soft_cap_warning(running_entry) when is_map(running_entry) do
+    soft_cap = soft_cap_for_running_entry(running_entry)
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    already_notified = Map.get(running_entry, :soft_cap_notified, false)
+    issue = Map.get(running_entry, :issue)
+
+    if is_integer(soft_cap) and soft_cap > 0 and total_tokens > soft_cap and not already_notified and
+         match?(%Issue{id: issue_id} when is_binary(issue_id), issue) do
+      issue_id = issue.id
+      identifier = Map.get(running_entry, :identifier, issue_id || "unknown")
+
+      body = """
+      ## Symphony Triage Alert
+      soft_cap_tokens exceeded for #{identifier}.
+      total_tokens=#{total_tokens}, soft_cap_tokens=#{soft_cap}
+      """
+
+      case Tracker.create_comment(issue_id, body) do
+        :ok ->
+          Logger.warning("Soft cap exceeded for issue_id=#{issue_id} issue_identifier=#{identifier}: total_tokens=#{total_tokens} soft_cap_tokens=#{soft_cap}")
+          Map.put(running_entry, :soft_cap_notified, true)
+
+        {:error, reason} ->
+          Logger.warning("Failed to post soft cap alert for issue_id=#{issue_id}: #{inspect(reason)}")
+          running_entry
+      end
+    else
+      running_entry
+    end
+  end
+
+  defp maybe_emit_soft_cap_warning(running_entry), do: running_entry
+
+  defp hard_cap_for_running_entry(running_entry) when is_map(running_entry) do
+    issue_budget_hard_cap =
+      running_entry
+      |> Map.get(:triage_budget)
+      |> TriageBudget.hard_cap_tokens()
+
+    case issue_budget_hard_cap do
+      cap when is_integer(cap) and cap > 0 -> cap
+      _ -> Config.max_tokens_per_attempt()
+    end
+  end
+
+  defp hard_cap_for_running_entry(_running_entry), do: Config.max_tokens_per_attempt()
+
+  defp soft_cap_for_running_entry(running_entry) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:triage_budget)
+    |> TriageBudget.soft_cap_tokens()
+  end
+
+  defp soft_cap_for_running_entry(_running_entry), do: nil
+
   defp maybe_park_issue_after_token_cap(%State{} = state, running_entry) when is_map(running_entry) do
     issue = Map.get(running_entry, :issue)
     total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
-    cap = Config.max_tokens_per_attempt()
+    cap = hard_cap_for_running_entry(running_entry)
     identifier = Map.get(running_entry, :identifier, "unknown")
 
     Logger.warning("Token cap exceeded for issue_id=#{Map.get(issue, :id)} issue_identifier=#{identifier}: total_tokens=#{total_tokens} cap=#{inspect(cap)}; stopping active run")
@@ -1733,6 +1801,27 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_transition_to_backlog(_issue, _identifier), do: :ok
+
+  defp maybe_comment_stalled_anomaly(%Issue{id: issue_id} = issue, identifier, elapsed_ms, timeout_ms)
+       when is_binary(issue_id) do
+    detected_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    body = """
+    ## Symphony Controller
+    anomaly_id: A07_ACTIVE_RUN_STALLED
+    detected_at: #{detected_at}
+    issue_identifier: #{identifier}
+    reason: No Codex activity for #{elapsed_ms}ms (stall timeout #{timeout_ms}ms).
+    actions_taken: comment, terminate_run, retry_with_backoff
+    next_owner: #{issue.assignee_id || "builder"}
+    expected_recovery: ensure agent resumes progress or requeue to To Do with actionable blocker context
+    """
+
+    _ = Tracker.create_comment(issue_id, body)
+    :ok
+  end
+
+  defp maybe_comment_stalled_anomaly(_issue, _identifier, _elapsed_ms, _timeout_ms), do: :ok
 
   defp integer_like(value) when is_integer(value) and value >= 0, do: value
 

@@ -11,5 +11,5 @@ steps:
       - mix setup
       - mix build
       - mix format --check-formatted
-      - mix lint
+      - mix specs.check
       - mix test

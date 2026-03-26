@@ -46,7 +46,7 @@ if [[ "${GITEA_VALIDATE_PROJECT_ID:-1}" != "0" ]]; then
 
   if grep -q 'href="/user/login"' <<<"${issues_html}"; then
     echo "GITEA_WEB_COOKIE appears invalid or expired (redirected to login)" >&2
-    echo "refresh GITEA_WEB_COOKIE and GITEA_WEB_CSRF_TOKEN from a live browser session" >&2
+    echo "refresh GITEA_WEB_COOKIE from a live browser session" >&2
     exit 1
   fi
 
@@ -65,6 +65,92 @@ if [[ "${GITEA_VALIDATE_PROJECT_ID:-1}" != "0" ]]; then
     fi
     exit 1
   fi
+
+  if [[ -n "${GITEA_USERNAME:-}" ]]; then
+    user_api_url="${GITEA_ENDPOINT%/}/api/v1/user"
+    if ! user_api_json="$(
+      curl -fsSL \
+        -H "Authorization: token ${GITEA_API_KEY}" \
+        "${user_api_url}"
+    )"; then
+      echo "failed to query token identity from ${user_api_url}" >&2
+      echo "check GITEA_API_KEY and network reachability" >&2
+      exit 1
+    fi
+
+    token_login="$(
+      sed -n 's/.*"login":"\([^"]*\)".*/\1/p' <<<"${user_api_json}" | head -n1
+    )"
+
+    if [[ -z "${token_login}" ]]; then
+      echo "unable to parse token identity login from /api/v1/user response" >&2
+      exit 1
+    fi
+
+    if [[ "${token_login}" != "${GITEA_USERNAME}" ]]; then
+      echo "GITEA_USERNAME does not match token identity" >&2
+      echo "configured GITEA_USERNAME=${GITEA_USERNAME}, token login=${token_login}" >&2
+      exit 1
+    fi
+  fi
+
+  project_url="${GITEA_ENDPOINT%/}/${GITEA_OWNER}/${GITEA_REPO}/projects/${GITEA_PROJECT_ID}"
+  if ! project_html="$(curl -fsSL --cookie "${GITEA_WEB_COOKIE}" "${project_url}")"; then
+    echo "failed to fetch project page for CSRF validation: ${project_url}" >&2
+    exit 1
+  fi
+
+  if grep -q 'href="/user/login"' <<<"${project_html}"; then
+    echo "GITEA_WEB_COOKIE appears invalid on project page (redirected to login)" >&2
+    exit 1
+  fi
+
+  csrf_token="$(
+    sed -n 's/.*_csrf=\([^;[:space:]]*\).*/\1/p' <<<"${GITEA_WEB_COOKIE}" | head -n1
+  )"
+  if [[ -z "${csrf_token}" ]]; then
+    echo "GITEA_WEB_COOKIE is missing _csrf; cannot validate project mutation" >&2
+    exit 1
+  fi
+
+  mapfile -t project_column_ids < <(
+    grep -oE 'class="project-column"[^>]*data-id="[0-9]+"' <<<"${project_html}" \
+      | sed -E 's/.*data-id="([0-9]+)".*/\1/'
+  )
+
+  if [[ ${#project_column_ids[@]} -eq 0 ]]; then
+    echo "no project columns detected on ${project_url}; cannot validate board mutation" >&2
+    exit 1
+  fi
+
+  columns_payload='{"columns":['
+  for i in "${!project_column_ids[@]}"; do
+    column_id="${project_column_ids[$i]}"
+    [[ $i -gt 0 ]] && columns_payload+=","
+    columns_payload+="{\"columnID\":${column_id},\"sorting\":${i}}"
+  done
+  columns_payload+=']}'
+
+  move_url="${project_url}/move"
+  tmp_body="$(mktemp)"
+  http_code="$(
+    curl -sS -o "${tmp_body}" -w "%{http_code}" \
+      -X POST \
+      -H "content-type: application/json" \
+      -H "x-csrf-token: ${csrf_token}" \
+      --cookie "${GITEA_WEB_COOKIE}" \
+      --data "${columns_payload}" \
+      "${move_url}"
+  )"
+
+  if [[ ! "${http_code}" =~ ^2 ]]; then
+    echo "Gitea web mutation validation failed at startup: ${move_url}" >&2
+    echo "HTTP ${http_code}: $(tr '\n' ' ' <"${tmp_body}" | sed 's/[[:space:]]\+/ /g')" >&2
+    echo "refresh GITEA_WEB_COOKIE (with current _csrf) and restart" >&2
+    rm -f "${tmp_body}"
+    exit 1
+  fi
+  rm -f "${tmp_body}"
 fi
 
 if [[ -n "${CARAPACE_INSTALL_URL:-}" ]]; then

@@ -1019,14 +1019,13 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp add_issue_to_project_board(tracker, issue_id) when is_binary(issue_id) do
     with {:ok, issue} <- fetch_issue(tracker, issue_id),
-         {:ok, issue_internal_id} <- parse_issue_internal_id(issue) do
-      payload = %{"id" => tracker.project_id, "issue_ids" => [issue_internal_id]}
-      path = "/#{tracker.owner}/#{tracker.repo}/issues/projects"
-
-      case web_request(tracker, :post, path, payload, csrf_required: true) do
-        {:ok, _response} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
+         {:ok, issue_number} <- parse_issue_number(issue) do
+      run_gt_command(tracker, [
+        "project",
+        "add",
+        Integer.to_string(tracker.project_id),
+        Integer.to_string(issue_number)
+      ])
     else
       {:skip, reason} -> {:skip, reason}
       {:error, reason} -> {:error, reason}
@@ -1237,30 +1236,29 @@ defmodule SymphonyElixir.Gitea.Client do
   defp maybe_move_issue_on_project_board(%{project_id: nil}, _issue, _state_name), do: :ok
 
   defp maybe_move_issue_on_project_board(tracker, issue, state_name) do
-    with {:ok, issue_internal_id} <- parse_issue_internal_id(issue),
-         {:ok, target_column_key} <- state_to_board_column_key(state_name),
-         %{} = snapshot <- maybe_fetch_project_board_snapshot(tracker),
-         {:ok, target_column_id} <- board_column_id(snapshot, target_column_key) do
-      if Map.get(snapshot.issue_column_key_by_internal_id, issue_internal_id) == target_column_key do
-        Logger.info("board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} outcome=already_in_target")
+    with {:ok, issue_number} <- parse_issue_number(issue),
+         {:ok, target_column_title} <- state_to_board_column_title(state_name) do
+      case run_gt_command(tracker, [
+             "project",
+             "move",
+             Integer.to_string(tracker.project_id),
+             Integer.to_string(issue_number),
+             "--to",
+             target_column_title
+           ]) do
+        :ok ->
+          Logger.info(
+            "board_move issue=#{issue_number} target_state=#{state_name} target_column=#{target_column_title} outcome=moved_via_gt"
+          )
 
-        :ok
-      else
-        case move_issue_on_board(tracker, issue_internal_id, target_column_id) do
-          :ok ->
-            Logger.info(
-              "board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} target_column_id=#{target_column_id} outcome=moved"
-            )
+          :ok
 
-            :ok
+        {:error, reason} ->
+          Logger.warning(
+            "board_move issue=#{issue_number} target_state=#{state_name} target_column=#{target_column_title} outcome=error_via_gt reason=#{inspect(reason)}"
+          )
 
-          {:error, reason} ->
-            Logger.warning(
-              "board_move issue=#{Map.get(issue, "number")} internal_id=#{issue_internal_id} target_state=#{state_name} target_column=#{target_column_key} target_column_id=#{target_column_id} outcome=error reason=#{inspect(reason)}"
-            )
-
-            {:error, reason}
-        end
+          {:error, reason}
       end
     else
       {:skip, reason} ->
@@ -1296,35 +1294,16 @@ defmodule SymphonyElixir.Gitea.Client do
     end
   end
 
-  defp move_issue_on_board(tracker, issue_internal_id, target_column_id) do
-    path =
-      "/#{tracker.owner}/#{tracker.repo}/projects/#{tracker.project_id}/#{target_column_id}/move"
+  defp parse_issue_number(%{"number" => number}) when is_integer(number), do: {:ok, number}
 
-    payload = %{"issues" => [%{"issueID" => issue_internal_id, "sorting" => 0}]}
-
-    case web_request(tracker, :post, path, payload, csrf_required: true) do
-      {:ok, _body} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp board_column_id(snapshot, target_column_key) do
-    case Map.get(snapshot.columns_by_key, target_column_key) do
-      nil -> {:skip, :no_matching_board_column}
-      id -> {:ok, id}
-    end
-  end
-
-  defp parse_issue_internal_id(%{"id" => id}) when is_integer(id), do: {:ok, id}
-
-  defp parse_issue_internal_id(%{"id" => id}) when is_binary(id) do
-    case Integer.parse(String.trim(id)) do
+  defp parse_issue_number(%{"number" => number}) when is_binary(number) do
+    case Integer.parse(String.trim(number)) do
       {parsed, ""} -> {:ok, parsed}
-      _ -> {:skip, :invalid_issue_internal_id}
+      _ -> {:skip, :invalid_issue_number}
     end
   end
 
-  defp parse_issue_internal_id(_issue), do: {:skip, :missing_issue_internal_id}
+  defp parse_issue_number(_issue), do: {:skip, :missing_issue_number}
 
   defp parse_project_board_html(html) when is_binary(html) do
     case Floki.parse_document(html) do
@@ -1397,20 +1376,70 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp parse_integer_or_nil(_value), do: nil
 
-  defp state_to_board_column_key(state_name) when is_binary(state_name) do
+  defp state_to_board_column_title(state_name) when is_binary(state_name) do
     normalized = board_column_key(state_name)
 
-    key =
+    title =
       case normalized do
-        "closed" -> "done"
-        "canceled" -> "cancelled"
-        other -> other
+        "todo" -> "To Do"
+        "inprogress" -> "In Progress"
+        "done" -> "Done"
+        "backlog" -> "Backlog"
+        "closed" -> "Done"
+        "canceled" -> "Cancelled"
+        "cancelled" -> "Cancelled"
+        "duplicate" -> "Duplicate"
+        _ -> nil
       end
 
-    if key == "", do: {:skip, :empty_state}, else: {:ok, key}
+    if is_binary(title), do: {:ok, title}, else: {:skip, :no_matching_board_column}
   end
 
-  defp state_to_board_column_key(_state_name), do: {:skip, :invalid_state}
+  defp state_to_board_column_title(_state_name), do: {:skip, :invalid_state}
+
+  defp run_gt_command(tracker, args) when is_list(args) do
+    {gt_binary, gt_args} =
+      case System.get_env("SYMPHONY_GT_COMMAND") do
+        nil ->
+          if File.exists?("/opt/carapace-venv/bin/gt"), do: {"/opt/carapace-venv/bin/gt", []}, else: {"gt", []}
+
+        value ->
+          tokens = String.split(value, ~r/\s+/, trim: true)
+          case tokens do
+            [] -> {"gt", []}
+            [binary | rest] -> {binary, rest}
+          end
+      end
+
+    env =
+      [
+        {"GITEA_URL", tracker.endpoint},
+        {"GITEA_TOKEN", tracker.api_key},
+        {"GITEA_REPO", "#{tracker.owner}/#{tracker.repo}"}
+      ]
+      |> maybe_put_env("GITEA_WEB_COOKIE", normalize_secret_header(tracker.web_cookie))
+      |> maybe_put_env("GITEA_WEB_CSRF_TOKEN", normalize_secret_header(tracker.web_csrf_token))
+
+    try do
+      case System.cmd(gt_binary, gt_args ++ args, env: env, stderr_to_stdout: true) do
+        {output, 0} ->
+          Logger.debug(
+            "gt command ok: #{gt_binary} #{Enum.join(gt_args ++ args, " ")} output=#{String.trim(output)}"
+          )
+
+          :ok
+
+        {output, status} ->
+          {:error, {:gt_command_failed, status, String.trim(output)}}
+      end
+    rescue
+      error ->
+        {:error, {:gt_command_error, Exception.message(error)}}
+    end
+  end
+
+  defp maybe_put_env(env, _key, nil), do: env
+  defp maybe_put_env(env, key, value), do: [{key, value} | env]
 
   defp board_column_key(name) when is_binary(name) do
     name

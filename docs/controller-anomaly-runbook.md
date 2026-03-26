@@ -59,6 +59,19 @@ Apply remediations in this order:
 Idempotency: skip duplicate writes when latest controller comment already records the same anomaly
 ID and target assignee/state for the current poll window.
 
+## Gitea Command Baseline
+
+For Gitea-backed operations, controller should prefer `gt` command recipes over custom one-off
+HTTP calls:
+
+- `gt project columns <project_id>`
+- `gt project add <project_id> <issue_number>`
+- `gt project move <project_id> <issue_number> --to "<column_name>"`
+
+Example mappings:
+- `A09_PROJECT_MEMBERSHIP_MISSING`: add to project, then move to `Backlog`
+- `A11_BACKLOG_WITH_OPEN_PR`: move to `Done` for reviewer handoff
+
 ## Escalation
 
 - Retry detection each poll.

@@ -52,3 +52,27 @@ Rules:
 6. If CI fails for an active PR, route the issue back to `To Do`, assign `builder`, and comment evidence.
 7. If review is pending but issue never reaches reviewer handoff, comment and reassign to `reviewer`.
 8. Keep interventions short, actionable, and evidence-backed.
+9. Use `gt` as the default mutation interface for project-board actions. Do not use ad hoc `curl` calls.
+
+Execution policy:
+- Assume `gt` is on PATH. If not, use `/opt/carapace-venv/bin/gt`.
+- Do not guess board column IDs. Resolve by name.
+- Record the exact command(s) and result in the typed controller comment `actions_taken`.
+
+Deterministic command recipes:
+- Discover board columns:
+  - `gt project columns "$GITEA_PROJECT_ID"`
+- Add issue to project board if missing:
+  - `gt project add "$GITEA_PROJECT_ID" "<issue_number>"`
+- Move issue card to recovery state:
+  - `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "Backlog"`
+  - `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "To Do"`
+  - `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "Done"`
+
+Anomaly minimum actions:
+- `A09_PROJECT_MEMBERSHIP_MISSING`:
+  - run `gt project add ...` then `gt project move ... --to "Backlog"`
+  - keep assignee `planner`
+- `A11_BACKLOG_WITH_OPEN_PR`:
+  - run `gt project move ... --to "Done"`
+  - keep assignee `reviewer`

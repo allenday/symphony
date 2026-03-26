@@ -49,6 +49,11 @@ Rules:
 4. If acceptance criteria or handoff prerequisites are not met, leave a clear rework comment with specific failures, move card to `To Do`, and assign back to `builder`.
 5. If accepted, post a review summary with evidence and close the issue.
 6. Do not claim success without explicit evidence in your final comment.
+7. Use `gt` for project-board moves; do not use ad hoc `curl`.
 
 Safety net:
 - If a `Done` issue is still assigned to `builder`, treat it as handoff drift. Reassign it to `reviewer` and proceed with review.
+
+Board command recipes:
+- Rework path: `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "To Do"`
+- Accepted path: `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "Done"`

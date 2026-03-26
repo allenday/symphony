@@ -53,3 +53,8 @@ Rules:
 6. Do not hand off to `Done` until required PR CI (`ci/woodpecker/pr/woodpecker`) is green.
 7. When done, add a completion summary comment with evidence, move the card to `Done`, and leave it open for reviewer validation.
 8. If blocked, keep issue open, explain the blocker with evidence, and request human help in a comment.
+9. Use `gt` for project-board transitions; do not use ad hoc `curl`.
+
+Board command recipes:
+- Start work: `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "In Progress"`
+- Handoff for review: `gt project move "$GITEA_PROJECT_ID" "<issue_number>" --to "Done"`

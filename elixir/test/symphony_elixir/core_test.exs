@@ -849,6 +849,17 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
+  test "should_move_issue_to_in_progress_for_test only returns true for todo states" do
+    assert Orchestrator.should_move_issue_to_in_progress_for_test("To Do")
+    assert Orchestrator.should_move_issue_to_in_progress_for_test("Todo")
+  end
+
+  test "should_move_issue_to_in_progress_for_test returns false for non-todo states" do
+    refute Orchestrator.should_move_issue_to_in_progress_for_test("In Progress")
+    refute Orchestrator.should_move_issue_to_in_progress_for_test("Done")
+    refute Orchestrator.should_move_issue_to_in_progress_for_test("Backlog")
+  end
+
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     upper_jitter_ms = 5_000
     lower_jitter_ms = 1_000

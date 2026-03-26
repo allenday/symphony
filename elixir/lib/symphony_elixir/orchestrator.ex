@@ -347,6 +347,12 @@ defmodule SymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host)
   end
 
+  @doc false
+  @spec should_move_issue_to_in_progress_for_test(String.t()) :: boolean()
+  def should_move_issue_to_in_progress_for_test(state_name) when is_binary(state_name) do
+    should_move_issue_to_in_progress?(state_name)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -773,9 +779,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_move_to_in_progress(%Issue{} = issue) do
-    normalized = normalize_issue_state(issue.state)
-
-    if normalized != "in progress" do
+    if should_move_issue_to_in_progress?(issue.state) do
       case Tracker.update_issue_state(issue.id, "In Progress") do
         :ok ->
           Logger.info("Moved issue to In Progress: #{issue_context(issue)}")
@@ -784,6 +788,10 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.warning("Failed to move issue to In Progress: #{issue_context(issue)} reason=#{inspect(reason)}")
       end
     end
+  end
+
+  defp should_move_issue_to_in_progress?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) in ["todo", "to do"]
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)

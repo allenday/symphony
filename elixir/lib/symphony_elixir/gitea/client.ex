@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Gitea.Client do
   require Logger
 
   alias SymphonyElixir.{Config, Linear.Issue, TriageBudget}
+  alias SymphonyElixir.Gitea.RemediationRunner
 
   @page_size 50
 
@@ -755,34 +756,50 @@ defmodule SymphonyElixir.Gitea.Client do
 
   defp run_controller_remediation_action(role, issue, reason, action, fun)
        when is_function(fun, 0) do
-    result =
-      try do
-        fun.()
-      rescue
-        exception -> {:error, {:exception, Exception.message(exception)}}
-      end
-
     anomaly_id = controller_anomaly_id(reason)
     issue_identifier = issue.identifier || issue.id || "unknown"
-    normalized_result = remediation_result_status(result)
 
-    Logger.info(
-      "controller_remediation role=#{role} issue=#{issue_identifier} anomaly_id=#{anomaly_id} action=#{remediation_action_name(action)} result=#{normalized_result} detail=#{inspect(result)}"
+    RemediationRunner.run(
+      role: role,
+      issue_identifier: issue_identifier,
+      anomaly_id: anomaly_id,
+      action: remediation_action_name(action),
+      fun: fun,
+      max_attempts: remediation_max_attempts(),
+      backoff_ms: remediation_retry_backoff_ms()
     )
-
-    result
   end
-
-  defp remediation_result_status(:ok), do: "ok"
-  defp remediation_result_status({:ok, _}), do: "ok"
-  defp remediation_result_status({:skip, _}), do: "skip"
-  defp remediation_result_status({:error, _}), do: "error"
-  defp remediation_result_status(_other), do: "unknown"
 
   defp remediation_action_name({:close_pr, number}), do: "close_pr:#{number}"
   defp remediation_action_name({:request_reviewer, number}), do: "request_reviewer:#{number}"
   defp remediation_action_name(action) when is_atom(action), do: Atom.to_string(action)
   defp remediation_action_name(action), do: to_string(action)
+
+  defp remediation_max_attempts do
+    case System.get_env("GITEA_REMEDIATION_MAX_ATTEMPTS") do
+      nil ->
+        2
+
+      raw ->
+        case Integer.parse(String.trim(raw)) do
+          {value, ""} -> max(1, min(value, 5))
+          _ -> 2
+        end
+    end
+  end
+
+  defp remediation_retry_backoff_ms do
+    case System.get_env("GITEA_REMEDIATION_RETRY_BACKOFF_MS") do
+      nil ->
+        400
+
+      raw ->
+        case Integer.parse(String.trim(raw)) do
+          {value, ""} -> max(50, min(value, 5_000))
+          _ -> 400
+        end
+    end
+  end
 
   defp maybe_create_controller_comment(tracker, issue, reason, next_owner, target_state) do
     anomaly_id = controller_anomaly_id(reason)
